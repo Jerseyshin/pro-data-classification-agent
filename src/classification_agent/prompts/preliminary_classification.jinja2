@@ -1,0 +1,71 @@
+You are a preliminary classification expert. Based on the feature analysis below, classify the table field into the appropriate data item categories from the available hierarchical classification system.
+
+## Input:
+
+Table name: {{ input.table_name }}
+Field name: {{ input.field_name }}
+{% if input.field_description %}Field description: {{ input.field_description }}{% endif %}
+
+## Feature Analysis:
+{% if feature_analysis %}
+- Table name keywords: {{ feature_analysis.table_name_keywords|join(', ') }}
+- Field name keywords: {{ feature_analysis.field_name_keywords|join(', ') }}
+- Description keywords: {{ feature_analysis.description_keywords|join(', ') }}
+- Semantic summary: {{ feature_analysis.semantic_summary }}
+- Consistency analysis: {{ feature_analysis.consistency_analysis }}
+- Dominant source: {{ feature_analysis.dominant_source }}
+{% endif %}
+{% if reclassification_note %}
+## ⚠️ Reclassification Notice:
+The previous classification attempt was rejected during verification. Reason:
+{{ reclassification_note }}
+Please carefully reconsider your classification based on this feedback and avoid the same mistake.
+{% endif %}
+
+{% if retrieved_examples and retrieved_examples|length > 0 %}
+## Similar Labeled Examples (for reference):
+Here are similar table fields that have been labeled previously. Use them as a reference to help with your classification. Higher similarity means more relevant.
+
+{% for example in retrieved_examples %}
+Example {{ loop.index }} (similarity: {{ "%.3f"|format(example.similarity_score) }}):
+- Table: {{ example.input.table_name }}
+- Field: {{ example.input.field_name }}
+{% if example.input.field_description %}
+- Description: {{ example.input.field_description }}
+{% endif %}
+- Correct label: level1="{{ example.label.level1 }}", level2="{{ example.label.level2 }}", data_item="{{ example.label.data_item }}"
+{% endfor %}
+{% endif %}
+
+## Available Hierarchical Classification System:
+{% for cat in hierarchical_categories %}
+{
+  "level1": "{{ cat.level1 }}",
+  "level2": "{{ cat.level2 }}",
+  "data_item": "{{ cat.data_item }}",
+  "data_subitems": [{% for sub in cat.data_subitems %}{'"{{ sub.name }}"', {% endfor %}]
+}{% endfor %}
+
+## Requirements:
+{% if allow_multiple%}- Multiple matching categories are allowed (this field can belong to multiple data items).{% else %}- Only select the single best matching category.{% endif %}
+- For each prediction, give a confidence score between 0 and 1.
+- Provide clear reasoning for each prediction.
+- Consider the dominant source analysis from feature analysis when making your decision.
+
+## Output format (JSON only):
+
+{
+  "predictions": [
+    {
+      "level1": "level1 name",
+      "level2": "level2 name",
+      "data_item": "predicted data item name",
+      "matching_data_subitems": ["matched data subitem name 1", "matched data subitem name 2"],
+      "confidence": 0.85,
+      "reasoning": "your reasoning here"
+    }
+  ],
+  "total_confidence": average confidence of all predictions (0.0 - 1.0)
+}
+
+If you found no matching categories, predictions should be an empty array.

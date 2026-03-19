@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(PYTHONPATH=src python examples/basic_usage.py)",
+      "Bash(PYTHONPATH=src python examples/rag_usage.py)",
+      "Bash(PYTHONPATH=src python examples/bge_rag_usage.py)",
+      "Bash(source classification/bin/activate)",
+      "Bash(PYTHONPATH=src python -c \":*)",
+      "Bash(PYTHONPATH=src python examples/batch_evaluation.py)",
+      "Bash(git add:*)"
+    ]
+  }
+}

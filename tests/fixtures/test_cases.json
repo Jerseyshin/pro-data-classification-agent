@@ -1,0 +1,42 @@
+[
+  {
+    "name": "deviceidtail in app download log",
+    "input": {
+      "table_name": "框架应用市场下载结果日志",
+      "field_name": "deviceidtail",
+      "field_description": "设备ID尾部"
+    },
+    "expected_labels": ["用户标识"],
+    "description": "模糊字段需要表名上下文，避免被device关键词误导到硬件分类"
+  },
+  {
+    "name": "network field",
+    "input": {
+      "table_name": "框架应用市场下载结果日志",
+      "field_name": "network",
+      "field_description": null
+    },
+    "expected_labels": ["网络基本信息"],
+    "description": "清晰字段直接分类，不需要太多表名上下文"
+  },
+  {
+    "name": "user_id in user table",
+    "input": {
+      "table_name": "用户表",
+      "field_name": "user_id",
+      "field_description": "用户唯一标识"
+    },
+    "expected_labels": ["用户标识"],
+    "description": "清晰的用户ID字段"
+  },
+  {
+    "name": "birth date",
+    "input": {
+      "table_name": "用户基本信息表",
+      "field_name": "birth_date",
+      "field_description": "用户出生日期"
+    },
+    "expected_labels": ["人口属性"],
+    "description": "人口属性中的生日字段"
+  }
+]

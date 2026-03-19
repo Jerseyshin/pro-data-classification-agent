@@ -1,0 +1,42 @@
+import os
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
+
+load_dotenv()
+
+
+class Settings(BaseSettings):
+    """Application settings"""
+
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    openai_base_url: str | None = os.getenv("OPENAI_BASE_URL", None)
+
+    default_confidence_threshold: float = 0.7
+    default_allow_multiple: bool = True
+
+    # RAG settings
+    enable_rag: bool = False
+    rag_top_k: int = 5
+    rag_similarity_threshold: float = 0.5
+
+    # Embedding provider: "openai" or "bge"
+    # - openai: use OpenAI API embeddings (good quality, requires API key)
+    # - bge: use local BGE model (BAAI/bge-large-zh-v1.5, good for Chinese, runs locally)
+    rag_embedding_provider: str = os.getenv("RAG_EMBEDDING_PROVIDER", "openai")
+
+    # OpenAI embedding settings
+    rag_embedding_model: str = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small")
+    # Optional: separate OpenAI credentials just for RAG embeddings
+    # Useful when you use a different provider for chat (e.g. MiniMax)
+    rag_openai_api_key: str | None = os.getenv("RAG_OPENAI_API_KEY", None)
+    rag_openai_base_url: str | None = os.getenv("RAG_OPENAI_BASE_URL", None)
+
+    # BGE local embedding settings (for BAAI/bge-large-zh-v1.5)
+    # You can use a local path instead of HuggingFace model name
+    bge_model_name: str = os.getenv("BGE_MODEL_NAME", "BAAI/bge-large-zh-v1.5")
+    bge_device: str = os.getenv("BGE_DEVICE", "cpu")
+    bge_use_fp16: bool = os.getenv("BGE_USE_FP16", "true").lower() == "true"
+
+    class Config:
+        env_file = ".env"
