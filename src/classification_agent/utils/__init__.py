@@ -6,6 +6,11 @@ from .data_reader import (
     parse_ground_truth,
     TableFieldInputWithGroundTruth,
 )
+from .result_exporter import (
+    export_results_to_csv,
+    export_results_to_markdown,
+    export_batch_results,
+)
 
 __all__ = [
     "get_logger",
@@ -15,4 +20,7 @@ __all__ = [
     "load_data_csv_with_gt",
     "parse_ground_truth",
     "TableFieldInputWithGroundTruth",
+    "export_results_to_csv",
+    "export_results_to_markdown",
+    "export_batch_results",
 ]

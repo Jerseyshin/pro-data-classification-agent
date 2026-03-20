@@ -8,7 +8,11 @@
       "Bash(source classification/bin/activate)",
       "Bash(PYTHONPATH=src python -c \":*)",
       "Bash(PYTHONPATH=src python examples/batch_evaluation.py)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"Complete hierarchical data classification agent with RAG and evaluation:*)",
+      "Bash(git push:*)",
+      "Bash(git restore:*)",
+      "Bash(source classificationEnv/bin/activate)"
     ]
   }
 }

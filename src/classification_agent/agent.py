@@ -48,6 +48,8 @@ class ClassificationAgent:
         bge_model_name: Optional[str] = None,
         bge_device: Optional[str] = None,
         bge_use_fp16: Optional[bool] = None,
+        # Speed optimization
+        fast_mode: Optional[bool] = None,
     ):
         """
         Args:
@@ -64,6 +66,8 @@ class ClassificationAgent:
             bge_model_name: BGE 模型名称或本地路径
             bge_device: BGE 运行设备 ("cpu" or "cuda")
             bge_use_fp16: BGE 是否使用半精度
+            fast_mode: 是否开启快速模式，合并特征分析+初步分类为一次LLM调用，
+                减少约33%的网络往返，速度更快但精度可能略有下降
         """
         self.settings = settings or Settings()
 
@@ -83,6 +87,9 @@ class ClassificationAgent:
             self.settings.bge_device = bge_device
         if bge_use_fp16 is not None:
             self.settings.bge_use_fp16 = bge_use_fp16
+        # Apply fast mode override
+        if fast_mode is not None:
+            self.settings.fast_mode = fast_mode
 
         self.llm = llm or self._create_default_llm()
         self.hierarchical_categories = hierarchical_categories
@@ -319,7 +326,7 @@ class ClassificationAgent:
                 **{k: v for k, v in result_state["preliminary_classification"].items() if k in known_preliminary_keys}
             ),
             "verification_result": VerificationResult(
-                **{k: v for k, v in result_state["verification"].items() if k in known_verification_keys}
+                **{k: v for k, v in (result_state.get("verification") or {}).items() if k in known_verification_keys}
             ),
             "evaluation": result_state.get("evaluation"),
         }

@@ -42,3 +42,6 @@ label.csv
 
 # Virtual environment
 classificationEnv/
+
+# Output directories (result exports)
+outputs/

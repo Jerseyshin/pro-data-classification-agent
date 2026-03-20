@@ -38,5 +38,10 @@ class Settings(BaseSettings):
     bge_device: str = os.getenv("BGE_DEVICE", "cpu")
     bge_use_fp16: bool = os.getenv("BGE_USE_FP16", "true").lower() == "true"
 
+    # Speed optimization: fast mode merges feature analysis + preliminary classification
+    # into one LLM call, reducing network round-trips by ~33%
+    # Faster speed with slightly lower accuracy (usually acceptable)
+    fast_mode: bool = os.getenv("FAST_MODE", "false").lower() == "true"
+
     class Config:
         env_file = ".env"

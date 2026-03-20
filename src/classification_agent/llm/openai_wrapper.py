@@ -55,7 +55,22 @@ class OpenAILLM(BaseLLM):
         # Remove any think closing tag that might be left
         response_text = response_text.replace("</think>", "").strip()
 
-        # Remove markdown code block markers
+        # Find and extract the first code block with json if it exists
+        if "```json" in response_text:
+            # Extract content between ```json and next ```
+            start = response_text.find("```json") + len("```json")
+            end = response_text.find("```", start)
+            if end > start:
+                response_text = response_text[start:end]
+        elif "```" in response_text:
+            # Extract content between ``` and next ```
+            start = response_text.find("```") + len("```")
+            end = response_text.find("```", start)
+            if end > start:
+                response_text = response_text[start:end]
+
+        # Clean up any remaining markers at edges
+        response_text = response_text.strip()
         if response_text.startswith("```json"):
             response_text = response_text[7:]
         if response_text.startswith("```"):
@@ -64,6 +79,15 @@ class OpenAILLM(BaseLLM):
             response_text = response_text[:-3]
 
         response_text = response_text.strip()
+
+        # If there's text before the first {, skip everything before {
+        if '{' in response_text:
+            first_brace = response_text.index('{')
+            if first_brace > 0:
+                # If there's a closing }
+                last_brace = response_text.rindex('}')
+                if last_brace > first_brace:
+                    response_text = response_text[first_brace:last_brace+1]
 
         try:
             return json.loads(response_text)
@@ -103,7 +127,22 @@ class OpenAILLM(BaseLLM):
                 response_text = parts[-1]
         response_text = response_text.replace("</think>", "").strip()
 
-        # Remove markdown code block markers
+        # Find and extract the first code block with json if it exists
+        if "```json" in response_text:
+            # Extract content between ```json and next ```
+            start = response_text.find("```json") + len("```json")
+            end = response_text.find("```", start)
+            if end > start:
+                response_text = response_text[start:end]
+        elif "```" in response_text:
+            # Extract content between ``` and next ```
+            start = response_text.find("```") + len("```")
+            end = response_text.find("```", start)
+            if end > start:
+                response_text = response_text[start:end]
+
+        # Clean up any remaining markers at edges
+        response_text = response_text.strip()
         if response_text.startswith("```json"):
             response_text = response_text[7:]
         if response_text.startswith("```"):
@@ -112,6 +151,15 @@ class OpenAILLM(BaseLLM):
             response_text = response_text[:-3]
 
         response_text = response_text.strip()
+
+        # If there's text before the first {, skip everything before {
+        if '{' in response_text:
+            first_brace = response_text.index('{')
+            if first_brace > 0:
+                # If there's a closing }
+                last_brace = response_text.rindex('}')
+                if last_brace > first_brace:
+                    response_text = response_text[first_brace:last_brace+1]
 
         try:
             return json.loads(response_text)
