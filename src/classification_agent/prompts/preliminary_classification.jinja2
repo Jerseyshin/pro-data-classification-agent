@@ -6,6 +6,16 @@ Table name: {{ input.table_name }}
 Field name: {{ input.field_name }}
 {% if input.field_description %}Field description: {{ input.field_description }}{% endif %}
 
+{% if table_context %}
+## Table Context:
+The whole table has been analyzed:
+- Inferred purpose: {{ table_context.inferred_purpose }}
+- Key business concepts: {{ table_context.key_business_concepts|join(', ') }}
+- Overall data category: {{ table_context.overall_data_category }}
+
+Use this table-level context to help you classify this field correctly.
+{% endif %}
+
 ## Feature Analysis:
 {% if feature_analysis %}
 - Table name keywords: {{ feature_analysis.table_name_keywords|join(', ') }}
@@ -15,6 +25,15 @@ Field name: {{ input.field_name }}
 - Consistency analysis: {{ feature_analysis.consistency_analysis }}
 - Dominant source: {{ feature_analysis.dominant_source }}
 {% endif %}
+{% if hallucinated_data_items and hallucinated_data_items|length > 0 %}
+## ⚠️ Hallucination Warning:
+In the previous attempt, the following data_items were found to be hallucinations
+(they don't exist in the classification system or the hierarchy/subitems were incorrect):
+{% for item in hallucinated_data_items %}- {{ item }}
+{% endfor %}
+**DO NOT predict these data_items again.** Predict only from the available classification system above.
+{% endif %}
+
 {% if reclassification_note %}
 ## ⚠️ Reclassification Notice:
 The previous classification attempt was rejected during verification. Reason:

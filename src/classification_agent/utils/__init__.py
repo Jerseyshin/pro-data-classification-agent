@@ -4,6 +4,7 @@ from .data_reader import (
     load_data_csv,
     load_data_csv_with_gt,
     parse_ground_truth,
+    load_rag_training_data,
     TableFieldInputWithGroundTruth,
 )
 from .result_exporter import (
@@ -19,6 +20,7 @@ __all__ = [
     "load_data_csv",
     "load_data_csv_with_gt",
     "parse_ground_truth",
+    "load_rag_training_data",
     "TableFieldInputWithGroundTruth",
     "export_results_to_csv",
     "export_results_to_markdown",

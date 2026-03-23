@@ -1,0 +1,83 @@
+You are an expert for hierarchical table field classification.
+Given a whole table with multiple fields, classify each field into the appropriate data item categories from the available hierarchical classification system.
+
+## Table Information:
+
+Table name: {{ table_name }}
+{% if table_chinese_name %}Table chinese name: {{ table_chinese_name }}{% endif %}
+
+{% if table_context %}
+## Table Context Analysis:
+- Inferred purpose: {{ table_context.inferred_purpose }}
+- Key business concepts: {{ table_context.key_business_concepts|join(', ') }}
+- Overall data category: {{ table_context.overall_data_category }}
+{% endif %}
+
+## Fields to classify:
+{% for field in fields %}
+### Field {{ loop.index }}: {{ field.field_name }}
+{% if field.field_description %}Description: {{ field.field_description }}{% endif %}
+{% endfor %}
+
+{% if retrieved_examples and retrieved_examples|length > 0 %}
+## Similar Labeled Examples (for reference):
+Here are similar table fields that have been labeled previously. Use them as a reference to help with your classification. Higher similarity means more relevant.
+
+{% for example in retrieved_examples %}
+Example {{ loop.index }} (similarity: {{ "%.3f"|format(example.similarity_score) }}):
+- Table: {{ example.input.table_name }}
+- Field: {{ example.input.field_name }}
+{% if example.input.field_description %}
+- Description: {{ example.input.field_description }}
+{% endif %}
+- Correct label: level1="{{ example.label.level1 }}", level2="{{ example.label.level2 }}", data_item="{{ example.label.data_item }}"
+{% endfor %}
+{% endif %}
+
+## Available Hierarchical Classification System:
+{% for cat in hierarchical_categories %}
+{
+  "level1": "{{ cat.level1 }}",
+  "level2": "{{ cat.level2 }}",
+  "data_item": "{{ cat.data_item }}",
+  "data_subitems": [{% for sub in cat.data_subitems %}"{{ sub.name }}", {% endfor %}]
+}
+{% endfor %}
+
+## Requirements:
+{% if allow_multiple%}- Multiple matching categories are allowed (a field can belong to multiple data items).{% else %}- Only select the single best matching category for each field.{% endif %}
+- For each prediction, give a confidence score between 0 and 1.
+- Provide clear reasoning for each prediction.
+- Use the table context analysis above to help your classification - fields in this table likely align with the table's overall purpose.
+
+## Output format (JSON only):
+
+{
+  "results": [
+    {
+      "field_name": "exact_field_name",
+      "feature_analysis": {
+        "table_name_keywords": ["keyword1", "keyword2", ...],
+        "field_name_keywords": ["keyword1", "keyword2", ...],
+        "description_keywords": ["keyword1", ...],
+        "semantic_summary": "brief description of what this field is about",
+        "consistency_analysis": "analysis of whether different sources agree",
+        "dominant_source": "table_name|field_name|description"
+      },
+      "predictions": [
+        {
+          "level1": "level1 name",
+          "level2": "level2 name",
+          "data_item": "predicted data item name",
+          "matching_data_subitems": ["matched data subitem name 1", ...],
+          "confidence": 0.85,
+          "reasoning": "your reasoning here"
+        }
+      ],
+      "total_confidence": average confidence of all predictions for this field (0.0 - 1.0)
+    }
+  ]
+}
+
+If you found no matching categories for a field, predictions should be an empty array.
+Output must be valid JSON.

@@ -11,10 +11,21 @@ from classification_agent.types.schemas import (
 )
 
 
+class TableContextAnalysis(TypedDict):
+    """表级上下文分析结果"""
+    table_name: str                  # 表名
+    table_chinese_name: Optional[str] # 表中文名
+    inferred_purpose: str            # 推断的表用途/业务含义
+    key_business_concepts: List[str]  # 关键词：该表涉及的核心业务概念
+    overall_data_category: str       # 该表整体属于哪大类数据（例如：用户数据、交易数据、日志数据等）
+
+
 class ClassificationState(TypedDict):
     """LangGraph agent 状态"""
-    # 输入
-    input: TableFieldInput                              # 输入（表名 + 字段名 + 字段描述）
+    # 输入：可以是单个字段或整张表多个字段
+    input: TableFieldInput                              # 单个输入字段
+    inputs: Optional[List[TableFieldInput]]            # 整张表多个字段输入（批量模式）
+    table_chinese_name: Optional[str]                  # 表中文名（整表上下文分析用）
 
     # 分类体系配置
     hierarchical_categories: List[HierarchicalCategory]  # 完整层级分类体系（所有候选类别）
@@ -23,19 +34,31 @@ class ClassificationState(TypedDict):
     rag_enabled: bool                                    # 是否启用RAG检索
 
     # 评估：真实标签（可选，提供后会在最后运行评估）
-    ground_truth_data_items: Optional[List[str]]        # 真实数据项标签，提供则运行评估节点
+    # 对于批量模式：每个输入都有对应的ground truth
+    ground_truth_data_items: Optional[List[str]]        # 单个输入真实数据项标签
+    ground_truth_list: Optional[List[List[str]]]       # 批量输入：每个输入对应真实标签列表
+
+    # 表级上下文分析（新增：在单个字段分析前先分析整张表）
+    table_context_analysis: Optional[TableContextAnalysis] # 表级上下文分析结果
+
     evaluation: Optional[EvaluationResult]              # 评估结果（由 EvaluationNode 写入）
 
     # 中间结果
     retrieved_examples: Optional[List[RetrievedExample]]  # RAG检索到的相似标注样例
 
-    # 中间结果
+    # 中间结果（单个字段模式）
     feature_analysis: Optional[FeatureAnalysisResult]    # 特征分析结果
     preliminary_classification: Optional[PreliminaryResult]  # 初步分类结果
     verification: Optional[VerificationResult]           # 自我验证结果
 
+    # 批量模式结果
+    batch_results: Optional[List[dict]]                # 批量处理所有字段的结果列表
+
     # 迭代计数（防止无限循环）
     reclassification_count: int                          # 已经重新分类的次数，限制最多1次
+
+    # 记录之前被确定性检查剔除的幻觉预测，重分类时不要重复预测
+    hallucinated_data_items: List[str]                  # 之前被发现是幻觉的数据项名称列表
 
     # 最终输出（由 FinalResultNode 写入）
     _final_predictions: Optional[List[PredictedItem]]    # 最终预测列表

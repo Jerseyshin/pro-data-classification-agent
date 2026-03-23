@@ -16,6 +16,9 @@ class PreliminaryClassificationNode(BaseNode):
         if previous_verification and state.get("reclassification_count", 0) > 0:
             reclassification_note = previous_verification.get("cross_validation_note", "")
 
+        # 获取之前被发现是幻觉的数据项，重分类时不要重复预测
+        hallucinated_data_items = state.get("hallucinated_data_items", [])
+
         prompt = load_prompt(
             "preliminary_classification.jinja2",
             input=state["input"],
@@ -23,6 +26,8 @@ class PreliminaryClassificationNode(BaseNode):
             hierarchical_categories=state["hierarchical_categories"],
             allow_multiple=state["allow_multiple"],
             reclassification_note=reclassification_note,
+            hallucinated_data_items=hallucinated_data_items,
+            table_context=state.get("table_context_analysis"),
         )
 
         result = self.llm.generate_json(prompt)

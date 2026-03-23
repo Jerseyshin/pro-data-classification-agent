@@ -8,6 +8,16 @@ Table name: {{ input.table_name }}
 Field name: {{ input.field_name }}
 {% if input.field_description %}Field description: {{ input.field_description }}{% else %}No field description provided{% endif %}
 
+{% if table_context %}
+## Table Context:
+The whole table has been analyzed:
+- Inferred purpose: {{ table_context.inferred_purpose }}
+- Key business concepts: {{ table_context.key_business_concepts|join(', ') }}
+- Overall data category: {{ table_context.overall_data_category }}
+
+Use this table-level context to help you understand what this field is about.
+{% endif %}
+
 ## Available classification hierarchy (for reference):
 {% for cat in hierarchical_categories %}
 - {{ cat.level1 }} > {{ cat.level2 }} > {{ cat.data_item }}

@@ -34,6 +34,8 @@ class CombinedFeatureAndClassificationNode(BaseNode):
             hierarchical_categories=state["hierarchical_categories"],
             retrieved_examples=state.get("retrieved_examples"),
             allow_multiple=state["allow_multiple"],
+            table_context=state.get("table_context_analysis"),
+            hallucinated_data_items=state.get("hallucinated_data_items"),
         )
 
         result = self.llm.generate_json(prompt)

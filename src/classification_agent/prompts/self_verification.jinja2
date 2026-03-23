@@ -50,6 +50,11 @@ Also:
 - Check if any matching categories were missed that should be added
 - Look for obvious false positives caused by keyword overlap but different semantics
 - Consider whether the dominant source analysis was correct
+- **CRITICAL HALLUCINATION CHECK**: You must verify the prediction against the available classification system:
+  1. **Check data item exists**: Does the predicted data_item actually exist in the available hierarchical classification system above?
+  2. **Check data subitem belongs**: If matching_data_subitems are predicted, do those subitems actually belong to that data_item in the classification system?
+  3. **Check hierarchy consistency**: Is the level1 -> level2 -> data_item hierarchy correct? (i.e., does this data_item actually belong under this level1/level2 according to the available classification system?)
+- **If any hallucinations are found (non-existent data_item, wrong subitem, wrong hierarchy) you MUST REMOVE that prediction entirely!**
 
 {% if not allow_multiple %}Since multiple labels are not allowed, only the single most confident prediction should be kept.{% endif %}
 

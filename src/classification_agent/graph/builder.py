@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph, END
 from classification_agent.graph.state import ClassificationState
 from classification_agent.llm.base import BaseLLM
 from classification_agent.nodes import (
+    ContextAnalysisNode,
     FeatureAnalysisNode,
     PreliminaryClassificationNode,
     CombinedFeatureAndClassificationNode,
@@ -21,7 +22,7 @@ from .edges import after_verification_router, should_retrieve_router
 
 def should_evaluate_router(state: ClassificationState) -> str:
     """Router: 如果有 ground_truth，就走评估节点，否则直接结束"""
-    if state.get("ground_truth_data_items") is not None:
+    if state.get("ground_truth_data_items") is not None or state.get("ground_truth_list") is not None:
         return "evaluation"
     else:
         return "end"
@@ -32,14 +33,19 @@ def build_graph(
     settings: Settings,
     vector_store: Optional[InMemoryVectorStore] = None,
     embeddings: Optional[BaseEmbeddings] = None,
+    enable_table_context: bool = True,
 ) -> StateGraph:
     """构建LangGraph
 
     If settings.fast_mode is True: merge feature_analysis + preliminary_classification into one node,
     reduces network round-trips by ~33% for faster processing.
+
+    If enable_table_context is True: add context_analysis node at the beginning
+    to analyze whole table context before field-level classification.
     """
 
     # 创建节点
+    context_analysis = ContextAnalysisNode(llm)
     self_verification = SelfVerificationNode(llm)
     final_result = FinalResultNode(llm)
     evaluation = EvaluationNode(llm)
@@ -61,40 +67,93 @@ def build_graph(
         rag_retrieval = DummyRAGNode(llm)
     workflow.add_node("rag_retrieval", rag_retrieval.process)
 
-    if settings.fast_mode:
-        # Fast mode: combined feature analysis + preliminary classification
-        combined = CombinedFeatureAndClassificationNode(llm)
-        workflow.add_node("combined_feature_classification", combined.process)
-        workflow.set_entry_point("combined_feature_classification")
+    if enable_table_context:
+        # Add context analysis at the very beginning
+        workflow.add_node("context_analysis", context_analysis.process)
+        workflow.set_entry_point("context_analysis")
 
-        # After combined, RAG retrieval if needed, then go to self verification
-        workflow.add_conditional_edges(
-            "combined_feature_classification",
-            should_retrieve_router,
-            {
-                "rag_retrieval": "rag_retrieval",
-                "self_verification": "self_verification",
-            }
-        )
+        if settings.fast_mode:
+            # Fast mode: combined feature analysis + preliminary classification
+            combined = CombinedFeatureAndClassificationNode(llm)
+            workflow.add_node("combined_feature_classification", combined.process)
+
+            # After context analysis, RAG retrieval if needed, then go to combined
+            def next_after_context_router(state: ClassificationState) -> str:
+                if state.get("rag_enabled") and state.get("retrieved_examples") is None:
+                    return "rag_retrieval"
+                else:
+                    return "combined_feature_classification"
+
+            workflow.add_conditional_edges(
+                "context_analysis",
+                next_after_context_router,
+                {
+                    "rag_retrieval": "rag_retrieval",
+                    "combined_feature_classification": "combined_feature_classification",
+                }
+            )
+        else:
+            # Normal mode: separate nodes
+            feature_analysis = FeatureAnalysisNode(llm)
+            preliminary_classification = PreliminaryClassificationNode(llm)
+            workflow.add_node("feature_analysis", feature_analysis.process)
+            workflow.add_node("preliminary_classification", preliminary_classification.process)
+
+            # After context analysis, RAG retrieval if needed, then go to feature analysis
+            def next_after_context_router(state: ClassificationState) -> str:
+                if state.get("rag_enabled") and state.get("retrieved_examples") is None:
+                    return "rag_retrieval"
+                else:
+                    return "feature_analysis"
+
+            workflow.add_conditional_edges(
+                "context_analysis",
+                next_after_context_router,
+                {
+                    "rag_retrieval": "rag_retrieval",
+                    "feature_analysis": "feature_analysis",
+                }
+            )
+            # RAG检索完去特征分析
+            workflow.add_edge("rag_retrieval", "feature_analysis")
+            # 特征分析完去初步分类
+            workflow.add_edge("feature_analysis", "preliminary_classification")
     else:
-        # Normal mode: separate nodes
-        feature_analysis = FeatureAnalysisNode(llm)
-        preliminary_classification = PreliminaryClassificationNode(llm)
-        workflow.add_node("feature_analysis", feature_analysis.process)
-        workflow.add_node("preliminary_classification", preliminary_classification.process)
-        workflow.set_entry_point("feature_analysis")
+        # No table context analysis, start directly with feature/classification
+        if settings.fast_mode:
+            # Fast mode: combined feature analysis + preliminary classification
+            combined = CombinedFeatureAndClassificationNode(llm)
+            workflow.add_node("combined_feature_classification", combined.process)
+            workflow.set_entry_point("combined_feature_classification")
 
-        # 条件边：根据是否启用RAG决定走检索还是直接到初步分类
-        workflow.add_conditional_edges(
-            "feature_analysis",
-            should_retrieve_router,
-            {
-                "rag_retrieval": "rag_retrieval",
-                "preliminary_classification": "preliminary_classification",
-            }
-        )
-        # RAG检索完去初步分类
-        workflow.add_edge("rag_retrieval", "preliminary_classification")
+            # After combined, RAG retrieval if needed, then go to self verification
+            workflow.add_conditional_edges(
+                "combined_feature_classification",
+                should_retrieve_router,
+                {
+                    "rag_retrieval": "rag_retrieval",
+                    "self_verification": "self_verification",
+                }
+            )
+        else:
+            # Normal mode: separate nodes
+            feature_analysis = FeatureAnalysisNode(llm)
+            preliminary_classification = PreliminaryClassificationNode(llm)
+            workflow.add_node("feature_analysis", feature_analysis.process)
+            workflow.add_node("preliminary_classification", preliminary_classification.process)
+            workflow.set_entry_point("feature_analysis")
+
+            # 条件边：根据是否启用RAG决定走检索还是直接到初步分类
+            workflow.add_conditional_edges(
+                "feature_analysis",
+                should_retrieve_router,
+                {
+                    "rag_retrieval": "rag_retrieval",
+                    "preliminary_classification": "preliminary_classification",
+                }
+            )
+            # RAG检索完去初步分类
+            workflow.add_edge("rag_retrieval", "preliminary_classification")
 
     # Add common nodes
     workflow.add_node("self_verification", self_verification.process)
@@ -102,9 +161,14 @@ def build_graph(
     workflow.add_node("evaluation", evaluation.process)
 
     # After preliminary classification go to self verification
-    workflow.add_edge("preliminary_classification", "self_verification")
+    if not settings.fast_mode:
+        workflow.add_edge("preliminary_classification", "self_verification")
+    # After combined go directly to self verification
+    if settings.fast_mode and enable_table_context:
+        workflow.add_edge("combined_feature_classification", "self_verification")
     # RAG检索完去自验证
-    workflow.add_edge("rag_retrieval", "self_verification")
+    if not enable_table_context:
+        workflow.add_edge("rag_retrieval", "self_verification")
 
     # 后续边保持不变
     workflow.add_conditional_edges(

@@ -13,7 +13,8 @@ class FeatureAnalysisNode(BaseNode):
         prompt = load_prompt(
             "feature_analysis.jinja2",
             input=state["input"],
-            hierarchical_categories=state["hierarchical_categories"]
+            hierarchical_categories=state["hierarchical_categories"],
+            table_context=state.get("table_context_analysis"),
         )
 
         result = self.llm.generate_json(prompt)

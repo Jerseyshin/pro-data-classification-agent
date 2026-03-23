@@ -8,6 +8,15 @@ class TableFieldInput(TypedDict):
     field_description: Optional[str]  # 字段描述，例如 "账号ID"
 
 
+class TableContextAnalysis(TypedDict):
+    """表级上下文分析结果"""
+    table_name: str                  # 表名
+    table_chinese_name: Optional[str] # 表中文名
+    inferred_purpose: str            # 推断的表用途/业务含义
+    key_business_concepts: List[str] # 关键词：该表涉及的核心业务概念
+    overall_data_category: str       # 该表整体属于哪大类数据（例如：用户数据、交易数据、日志数据等）
+
+
 class DataSubitem(TypedDict):
     """数据子项：最细粒度叶子节点"""
     name: str              # 数据子项名称

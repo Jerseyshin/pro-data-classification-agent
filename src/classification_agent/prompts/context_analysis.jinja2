@@ -1,0 +1,38 @@
+You are a data warehouse business analyst. Given a table with multiple fields, analyze the overall business context of this table.
+
+## Table Information:
+
+Table name: {{ table_name }}
+{% if table_chinese_name %}Table chinese name: {{ table_chinese_name }}{% endif %}
+
+## Fields in this table:
+{% for field in fields %}
+- Field {{ loop.index }}: name="{{ field.field_name }}"{% if field.field_description %} description="{{ field.field_description }}"{% endif %}
+{% endfor %}
+
+## Your task:
+
+Analyze the overall table and infer:
+
+1. **What is the overall business purpose of this table?**
+   - What business process does this table support?
+   - Who are the users of this data?
+   - Give a concise description (1-3 sentences).
+
+2. **What are the key business concepts this table deals with?**
+   - List 3-8 key business domain keywords.
+   - Example: ["user identification", "transaction payment", "search behavior", ...]
+
+3. **What broad category of data does this table primarily contain?**
+   - Choose one from: user personal data, transaction/business data, behavior/logging data, metadata/config data, other
+   - If it mixes, pick the dominant category.
+
+## Output format (JSON only):
+
+{
+  "inferred_purpose": "Brief description of what this table is used for in business",
+  "key_business_concepts": ["concept1", "concept2", "concept3", ...],
+  "overall_data_category": "user personal data|transaction/business data|behavior/logging data|metadata/config data|other"
+}
+
+Keep it concise and focused on the big picture, not the individual fields.

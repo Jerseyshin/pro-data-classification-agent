@@ -1,4 +1,5 @@
 from .base_node import BaseNode
+from .context_analysis import ContextAnalysisNode
 from .feature_analysis import FeatureAnalysisNode
 from .preliminary_classification import PreliminaryClassificationNode
 from .combined_feature_classification import CombinedFeatureAndClassificationNode
@@ -9,6 +10,7 @@ from .evaluation import EvaluationNode
 
 __all__ = [
     "BaseNode",
+    "ContextAnalysisNode",
     "FeatureAnalysisNode",
     "PreliminaryClassificationNode",
     "CombinedFeatureAndClassificationNode",

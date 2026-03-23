@@ -5,6 +5,7 @@ Includes:
 - Global metrics (total samples, accuracy, precision, recall, F1)
 - Per-sample row with all intermediate node results
 - Ground truth and match status when available
+- Supports whole-table classification where evaluation is per-result
 """
 
 import csv
@@ -16,6 +17,7 @@ from classification_agent.types.schemas import (
     EvaluationResult,
     SingleEvaluationResult,
     TableFieldInput,
+    TableContextAnalysis,
 )
 
 
@@ -41,8 +43,13 @@ def export_results_to_csv(
         inputs: List of input table fields
         results: List of corresponding classification results
         evaluation: Optional overall evaluation result (when ground truth provided)
+            If None, will try to aggregate from per-result evaluation (whole-table mode).
     """
     file_path = Path(file_path)
+
+    # Try to aggregate evaluation from results if not provided
+    if evaluation is None:
+        evaluation = aggregate_evaluation_from_results(results)
 
     with open(file_path, 'w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f)
@@ -97,8 +104,18 @@ def export_results_to_csv(
             wrong = ''
             missing = ''
 
-            if evaluation and idx < len(evaluation['per_sample_results']):
+            # Get per-sample evaluation:
+            # - First try from result.evaluation (whole-table classification has it per-result)
+            # - Fallback to aggregated evaluation (sequential batch mode)
+            per_sample = None
+            if (result.get("evaluation") and
+                result["evaluation"].get("per_sample_results") and
+                len(result["evaluation"]["per_sample_results"]) > 0):
+                per_sample = result["evaluation"]["per_sample_results"][0]
+            elif evaluation and idx < len(evaluation['per_sample_results']):
                 per_sample = evaluation['per_sample_results'][idx]
+
+            if per_sample:
                 gt = '; '.join(per_sample['ground_truth_data_items'])
                 is_match = str(per_sample['exact_match'])
                 correct = '; '.join(per_sample['correct_predictions'])
@@ -127,6 +144,68 @@ def export_results_to_csv(
             writer.writerow(row)
 
 
+def aggregate_evaluation_from_results(
+    results: List[ClassificationResult],
+) -> Optional[EvaluationResult]:
+    """Aggregate per-result evaluation into overall evaluation metrics.
+
+    Used when doing whole-table classification where each result has its own evaluation.
+    """
+    total_samples = 0
+    exact_match_count = 0
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    per_sample_results = []
+
+    for result in results:
+        if (result.get("evaluation") and
+            result["evaluation"].get("per_sample_results") and
+            len(result["evaluation"]["per_sample_results"]) > 0):
+            per_sample = result["evaluation"]["per_sample_results"][0]
+            total_samples += 1
+            exact_match_count += 1 if per_sample["exact_match"] else 0
+            total_tp += len(per_sample["correct_predictions"])
+            total_fp += len(per_sample["wrong_predictions"])
+            total_fn += len(per_sample["missing_predictions"])
+            per_sample_results.append(per_sample)
+
+    if total_samples == 0:
+        return None
+
+    # Calculate aggregated metrics
+    exact_match_accuracy = exact_match_count / total_samples if total_samples > 0 else 0.0
+
+    if (total_tp + total_fp) == 0:
+        macro_precision = 0.0
+    else:
+        macro_precision = total_tp / (total_tp + total_fp)
+
+    if (total_tp + total_fn) == 0:
+        macro_recall = 0.0
+    else:
+        macro_recall = total_tp / (total_tp + total_fn)
+
+    if (macro_precision + macro_recall) == 0:
+        macro_f1 = 0.0
+    else:
+        macro_f1 = 2 * (macro_precision * macro_recall) / (macro_precision + macro_recall)
+
+    from classification_agent.types.schemas import EvaluationResult
+    return EvaluationResult(
+        total_samples=total_samples,
+        exact_match_count=exact_match_count,
+        exact_match_accuracy=exact_match_accuracy,
+        total_true_positives=total_tp,
+        total_false_positives=total_fp,
+        total_false_negatives=total_fn,
+        macro_precision=macro_precision,
+        macro_recall=macro_recall,
+        macro_f1=macro_f1,
+        per_sample_results=per_sample_results,
+    )
+
+
 def export_results_to_markdown(
     file_path: str | Path,
     inputs: List[TableFieldInput],
@@ -143,8 +222,13 @@ def export_results_to_markdown(
         inputs: List of input table fields
         results: List of corresponding classification results
         evaluation: Optional overall evaluation result (when ground truth provided)
+            If None, will try to aggregate from per-result evaluation (whole-table mode).
     """
     file_path = Path(file_path)
+
+    # Try to aggregate evaluation from results if not provided
+    if evaluation is None:
+        evaluation = aggregate_evaluation_from_results(results)
 
     with open(file_path, 'w', encoding='utf-8') as f:
         # Title
@@ -197,6 +281,18 @@ def export_results_to_markdown(
 
         f.write("\n")
 
+        # Table context (if available, from whole-table classification)
+        if len(results) > 0 and 'table_context_analysis' in results[0] and results[0]['table_context_analysis'] is not None:
+            ctx = results[0]['table_context_analysis']
+            f.write("## Table Context Analysis (Whole Table)\n\n")
+            f.write(f"- **Table name:** {ctx.get('table_name', 'N/A')}\n")
+            if ctx.get('table_chinese_name'):
+                f.write(f"- **Table chinese name:** {ctx['table_chinese_name']}\n")
+            f.write(f"- **Inferred purpose:** {ctx['inferred_purpose']}\n")
+            f.write(f"- **Key business concepts:** {', '.join(ctx['key_business_concepts'])}\n")
+            f.write(f"- **Overall data category:** {ctx['overall_data_category']}\n")
+            f.write("\n---\n\n")
+
         # Full details with intermediate steps
         f.write("## Full Details with Intermediate Steps\n\n")
         for idx, (inp, result) in enumerate(zip(inputs, results), 1):
@@ -215,6 +311,7 @@ def export_results_to_markdown(
             f.write(f"  - Dominant source: {fa['dominant_source']}\n")
             f.write(f"  - Table keywords: {', '.join(fa['table_name_keywords'])}\n")
             f.write(f"  - Field keywords: {', '.join(fa['field_name_keywords'])}\n")
+            f.write(f"  - Description keywords: {', '.join(fa['description_keywords'])}\n")
             f.write("\n")
 
             pc = result['preliminary_result']
@@ -234,6 +331,8 @@ def export_results_to_markdown(
             if vr.get('added_missing', []):
                 added = [p['data_item'] for p in vr.get('added_missing', [])]
                 f.write(f"  - Added missing: {', '.join(added)}\n")
+            if vr.get('cross_validation_note'):
+                f.write(f"  - Cross validation note: {vr['cross_validation_note']}\n")
             if vr.get('suggests_reclassification', False):
                 f.write(f"  - Suggests reclassification: Yes\n")
             f.write("\n")
@@ -243,8 +342,18 @@ def export_results_to_markdown(
             f.write(f"  - Final average confidence: {result['final_confidence']:.4f}\n")
             f.write("\n")
 
-            if evaluation and idx-1 < len(evaluation['per_sample_results']):
+            # Get per-sample evaluation (could be in result itself or in aggregated evaluation)
+            per_sample = None
+            # Try get from result.evaluation (whole-table classification has it per-result)
+            if (result.get("evaluation") and
+                result["evaluation"].get("per_sample_results") and
+                len(result["evaluation"]["per_sample_results"]) > 0):
+                per_sample = result["evaluation"]["per_sample_results"][0]
+            # Fallback to aggregated evaluation
+            elif evaluation and idx-1 < len(evaluation['per_sample_results']):
                 per_sample = evaluation['per_sample_results'][idx-1]
+
+            if per_sample:
                 f.write("- **Evaluation:**\n")
                 f.write(f"  - Ground truth: {', '.join(per_sample['ground_truth_data_items'])}\n")
                 f.write(f"  - Exact match: {'**YES**' if per_sample['exact_match'] else '**NO**'}\n")
