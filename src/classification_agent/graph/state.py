@@ -8,6 +8,7 @@ from classification_agent.types.schemas import (
     PredictedItem,
     RetrievedExample,
     EvaluationResult,
+    ClassificationResult,
 )
 
 
@@ -22,9 +23,10 @@ class TableContextAnalysis(TypedDict):
 
 class ClassificationState(TypedDict):
     """LangGraph agent 状态"""
-    # 输入：可以是单个字段或整张表多个字段
-    input: TableFieldInput                              # 单个输入字段
-    inputs: Optional[List[TableFieldInput]]            # 整张表多个字段输入（批量模式）
+    # 输入：可以是单个字段或整张表多个字段（批量模式）
+    input: TableFieldInput                              # 当前正在处理的单个输入字段
+    inputs: Optional[List[TableFieldInput]]            # 整张表所有输入字段（批量模式原始输入）
+    remaining_inputs: Optional[List[TableFieldInput]] # 批量模式中剩余待处理字段
     table_chinese_name: Optional[str]                  # 表中文名（整表上下文分析用）
 
     # 分类体系配置
@@ -35,32 +37,33 @@ class ClassificationState(TypedDict):
 
     # 评估：真实标签（可选，提供后会在最后运行评估）
     # 对于批量模式：每个输入都有对应的ground truth
-    ground_truth_data_items: Optional[List[str]]        # 单个输入真实数据项标签
-    ground_truth_list: Optional[List[List[str]]]       # 批量输入：每个输入对应真实标签列表
+    ground_truth_data_items: Optional[List[str]]        # 当前字段真实数据项标签
+    ground_truth_list: Optional[List[List[str]]]       # 批量输入：所有字段的真实标签列表
+    remaining_ground_truth: Optional[List[List[str]]]  # 批量模式中剩余待处理真实标签
 
-    # 表级上下文分析（新增：在单个字段分析前先分析整张表）
+    # 表级上下文分析（在单个字段分析前先分析整张表）
     table_context_analysis: Optional[TableContextAnalysis] # 表级上下文分析结果
 
-    evaluation: Optional[EvaluationResult]              # 评估结果（由 EvaluationNode 写入）
+    evaluation: Optional[EvaluationResult]              # 最终评估结果（由 EvaluationNode 写入）
 
-    # 中间结果
+    # 中间结果（共享）
     retrieved_examples: Optional[List[RetrievedExample]]  # RAG检索到的相似标注样例
 
-    # 中间结果（单个字段模式）
+    # 中间结果（当前正在处理的字段）
     feature_analysis: Optional[FeatureAnalysisResult]    # 特征分析结果
     preliminary_classification: Optional[PreliminaryResult]  # 初步分类结果
     verification: Optional[VerificationResult]           # 自我验证结果
 
-    # 批量模式结果
-    batch_results: Optional[List[dict]]                # 批量处理所有字段的结果列表
+    # 批量模式：已处理完的所有字段结果
+    completed_results: Optional[List[ClassificationResult]] # 已完成的分类结果列表
 
     # 迭代计数（防止无限循环）
-    reclassification_count: int                          # 已经重新分类的次数，限制最多1次
+    reclassification_count: int                          # 已经重新分类的次数，限制最多1次（针对当前字段）
 
     # 记录之前被确定性检查剔除的幻觉预测，重分类时不要重复预测
     hallucinated_data_items: List[str]                  # 之前被发现是幻觉的数据项名称列表
 
-    # 最终输出（由 FinalResultNode 写入）
+    # 最终输出（当前字段，由 FinalResultNode 写入）
     _final_predictions: Optional[List[PredictedItem]]    # 最终预测列表
     _final_labels: Optional[List[str]]                   # 最终标签列表
     _final_avg_confidence: Optional[float]               # 最终平均置信度

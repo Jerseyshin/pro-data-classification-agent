@@ -1,9 +1,10 @@
 from typing import List, Optional, Tuple
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 from langgraph.graph import StateGraph
 
-from classification_agent.graph.state import ClassificationState
+from classification_agent.graph.state import ClassificationState, TableContextAnalysis
 from classification_agent.graph.builder import build_graph
 from classification_agent.types.schemas import (
     TableFieldInput,
@@ -11,6 +12,7 @@ from classification_agent.types.schemas import (
     FeatureAnalysisResult,
     PreliminaryResult,
     VerificationResult,
+    RetrievedExample,
     ClassificationResult,
     PredictedItem
 )
@@ -337,6 +339,7 @@ class ClassificationAgent:
                 **{k: v for k, v in (result_state.get("verification") or {}).items() if k in known_verification_keys}
             ),
             "evaluation": result_state.get("evaluation"),
+            "table_context_analysis": None,
         }
 
         return classification_result
@@ -350,9 +353,15 @@ class ClassificationAgent:
         allow_multiple: Optional[bool] = None,
         enable_rag: Optional[bool] = None,
         ground_truth_list: Optional[List[List[str]]] = None,
+        max_workers: int = 10,
     ) -> List[ClassificationResult]:
         """
-        对整张表所有字段批量分类，一次LLM调用完成所有分类（大幅减少网络往返）
+        对整张表所有字段批量分类，**并行处理所有字段**：
+        context_analysis (一次) → (可选rag) → 并行处理每个字段独立完整流程：
+            feature_analysis → preliminary_classification → self_verification → final_result
+        最后汇总结果。表级上下文分析一次，所有字段共享，显著提速。
+
+        每个字段都会经过完整的特征分析、初步分类、自我验证，保留幻觉检查和评分。
 
         Args:
             fields: 整张表所有字段，每个元素包含 table_name, field_name, 可选 field_description
@@ -363,12 +372,11 @@ class ClassificationAgent:
             enable_rag: 动态指定是否启用RAG，不指定则使用settings默认
             ground_truth_list: 每个字段对应的真实数据项标签列表，如果提供会自动运行评估
                 len(ground_truth_list) == len(fields)
+            max_workers: 最大并发数，默认10，根据你的API并发限制调整
 
         Returns:
             List[ClassificationResult] 每个字段对应一个分类结果，顺序和 fields 一致
         """
-        from classification_agent.prompts.loader import load_prompt
-
         # 输入验证
         if not fields:
             raise ValueError("fields cannot be empty")
@@ -383,15 +391,13 @@ class ClassificationAgent:
                 "hierarchical_categories must be provided either "
                 "at initialization or classification time"
             )
-        # 动态传入的 categories 才需要校验
+        # 动态传入的 categories 才需要校验（初始化时传入的已在 __init__ 校验过）
         if hierarchical_categories is not None:
             validate_categories(categories)
 
         # 配置
         threshold = confidence_threshold if confidence_threshold is not None else self.confidence_threshold
         multiple = allow_multiple if allow_multiple is not None else self.allow_multiple
-
-        # Determine if RAG is enabled for this classification
         rag_enabled = enable_rag if enable_rag is not None else self.settings.enable_rag
 
         # Check if we actually have examples to use
@@ -399,172 +405,152 @@ class ClassificationAgent:
             logger.warning("RAG enabled but no examples available, disabling for this classification")
             rag_enabled = False
 
-        # Get table name from first field (all fields should have same table name)
-        table_name = fields[0]["table_name"]
-
-        # Step 1: table context analysis if enabled
+        # Step 1: Run table-level context analysis once (shared by all fields)
+        # Only if enable_table_context is True (default)
         table_context = None
-        if self.enable_table_context:
-            prompt_ctx = load_prompt(
-                "context_analysis.jinja2",
-                table_name=table_name,
-                table_chinese_name=table_chinese_name,
-                fields=[{"field_name": f["field_name"], "field_description": f.get("field_description")} for f in fields],
-            )
-            result_ctx = self.llm.generate_json(prompt_ctx)
-            table_context = {
-                "table_name": table_name,
-                "table_chinese_name": table_chinese_name,
-                "inferred_purpose": result_ctx.get("inferred_purpose", ""),
-                "key_business_concepts": result_ctx.get("key_business_concepts", []),
-                "overall_data_category": result_ctx.get("overall_data_category", ""),
-            }
-            logger.info(
-                "ClassificationAgent.table_context_analysis: purpose=%s, category=%s",
-                table_context["inferred_purpose"][:50],
-                table_context["overall_data_category"],
-            )
-
-        # Step 2: RAG retrieval if needed (retrieve once for whole table based on table context)
         retrieved_examples = None
-        if rag_enabled and self.vector_store and self.embeddings:
-            # Build query text from table context + all field names
-            query_parts = [f"Table: {table_name}"]
-            if table_context:
-                query_parts.append(f"Purpose: {table_context['inferred_purpose']}")
-                query_parts.extend(table_context["key_business_concepts"])
-            for f in fields[:10]:  # limit to first 10 to avoid too long query
-                query_parts.append(f["field_name"])
-            query_text = " ".join(query_parts)
+        if self.enable_table_context:
+            logger.info("Running table-level context analysis once (shared by all fields)...")
+            # Initial state just for context analysis and RAG
+            context_initial: ClassificationState = {
+                "input": None,
+                "inputs": fields,
+                "table_chinese_name": table_chinese_name,
+                "hierarchical_categories": categories,
+                "confidence_threshold": threshold,
+                "allow_multiple": multiple,
+                "rag_enabled": rag_enabled,
+                "ground_truth_data_items": None,
+                "ground_truth_list": ground_truth_list,
+                "remaining_ground_truth": None,
+                "evaluation": None,
+                "retrieved_examples": None,
+                "table_context_analysis": None,
+                "feature_analysis": None,
+                "preliminary_classification": None,
+                "verification": None,
+                "completed_results": None,
+                "reclassification_count": 0,
+                "hallucinated_data_items": [],
+                "_final_predictions": None,
+                "_final_labels": None,
+                "_final_avg_confidence": None,
+                "_reasoning_chain": None,
+            }
+            # Run just context analysis and RAG if needed
+            result = self.graph.invoke(context_initial)
+            table_context = result.get("table_context_analysis")
+            retrieved_examples = result.get("retrieved_examples")
+            logger.info("Table context analysis complete, starting parallel classification of %d fields...", len(fields))
 
-            query_emb = self.embeddings.embed_text(query_text)
-            if query_emb is not None:
-                retrieved_examples = self.vector_store.search(
-                    np.array(query_emb),
-                    self.settings.rag_top_k,
-                    self.settings.rag_similarity_threshold,
-                )
-            else:
-                logger.warning("Failed to get embedding for RAG query, proceeding without RAG")
+        # Step 2: Process all fields in parallel
+        completed_results: List[ClassificationResult] = [None] * len(fields)
 
-        # Step 3: Batch classification for all fields
-        prompt_batch = load_prompt(
-            "batch_table_classification.jinja2",
-            table_name=table_name,
-            table_chinese_name=table_chinese_name,
-            table_context=table_context,
-            fields=fields,
-            hierarchical_categories=categories,
-            retrieved_examples=retrieved_examples,
-            allow_multiple=multiple,
+        def process_field(i: int, field: TableFieldInput, gt: Optional[List[str]]) -> tuple[int, ClassificationResult]:
+            """Process a single field, keep track of original index for ordering"""
+            result = self._classify_single_with_context(
+                field_input=field,
+                table_context=table_context,
+                retrieved_examples=retrieved_examples,
+                hierarchical_categories=categories,
+                confidence_threshold=threshold,
+                allow_multiple=multiple,
+                enable_rag=rag_enabled,
+                ground_truth_data_items=gt,
+            )
+            return (i, result)
+
+        # Use thread pool for parallel execution (LLM calls are IO-bound, threads work well)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for i, field in enumerate(fields):
+                gt = ground_truth_list[i] if ground_truth_list and i < len(ground_truth_list) else None
+                futures.append(executor.submit(process_field, i, field, gt))
+
+            for future in as_completed(futures):
+                i, result = future.result()
+                completed_results[i] = result
+
+        logger.info(
+            "ClassificationAgent.classify_table: processed %d fields in parallel",
+            len(completed_results)
         )
 
-        result_batch = self.llm.generate_json(prompt_batch)
-        batch_results_data = result_batch.get("results", [])
+        return completed_results
 
-        # Step 4: Process each result into ClassificationResult
-        from classification_agent.types.schemas import (
-            FeatureAnalysisResult, PreliminaryResult, VerificationResult,
-        )
+    def _classify_single_with_context(
+        self,
+        field_input: TableFieldInput,
+        table_context: Optional[TableContextAnalysis],
+        retrieved_examples: Optional[List[RetrievedExample]],
+        hierarchical_categories: Optional[List[HierarchicalCategory]] = None,
+        confidence_threshold: Optional[float] = None,
+        allow_multiple: Optional[bool] = None,
+        enable_rag: Optional[bool] = None,
+        ground_truth_data_items: Optional[List[str]] = None,
+    ) -> ClassificationResult:
+        """Classify a single field with pre-computed shared table context (for parallel processing)"""
+        categories = hierarchical_categories or self.hierarchical_categories
+        threshold = confidence_threshold if confidence_threshold is not None else self.confidence_threshold
+        multiple = allow_multiple if allow_multiple is not None else self.allow_multiple
+        rag_enabled = enable_rag if enable_rag is not None else self.settings.enable_rag
+
+        if rag_enabled and (self.vector_store is None or self.vector_store.size == 0):
+            rag_enabled = False
+
+        # Initial state with shared context already provided
+        initial_state: ClassificationState = {
+            "input": field_input,
+            "hierarchical_categories": categories,
+            "confidence_threshold": threshold,
+            "allow_multiple": multiple,
+            "rag_enabled": rag_enabled,
+            "ground_truth_data_items": ground_truth_data_items,
+            "evaluation": None,
+            "retrieved_examples": retrieved_examples,
+            "table_context_analysis": table_context,
+            "feature_analysis": None,
+            "preliminary_classification": None,
+            "verification": None,
+            "reclassification_count": 0,
+            "hallucinated_data_items": [],
+            "_final_predictions": None,
+            "_final_labels": None,
+            "_final_avg_confidence": None,
+            "_reasoning_chain": None,
+        }
+
+        # Execute the graph from here (already has table context, goes straight to field processing)
+        result_state = self.graph.invoke(initial_state)
+
+        # Extract result
+        final_predictions: List[PredictedItem] = result_state.get("_final_predictions", [])
+        final_labels = result_state.get("_final_labels", [])
+        final_avg_confidence = result_state.get("_final_avg_confidence", 0.0)
+        reasoning_chain = result_state.get("_reasoning_chain", [])
+
         known_feature_keys = {"table_name_keywords", "field_name_keywords", "description_keywords",
                               "semantic_summary", "consistency_analysis", "dominant_source"}
         known_preliminary_keys = {"predictions", "total_confidence"}
+        known_verification_keys = {"verified_predictions", "removed_false_positives", "added_missing",
+                                   "average_confidence", "cross_validation_note", "suggests_reclassification"}
 
-        final_results: List[ClassificationResult] = []
+        classification_result: ClassificationResult = {
+            "final_predictions": final_predictions,
+            "final_labels": final_labels,
+            "final_confidence": final_avg_confidence,
+            "reasoning_chain": reasoning_chain,
+            "feature_analysis": FeatureAnalysisResult(
+                **{k: v for k, v in (result_state["feature_analysis"] or {}).items() if k in known_feature_keys}
+            ) if result_state.get("feature_analysis") else None,
+            "preliminary_result": PreliminaryResult(
+                **{k: v for k, v in (result_state.get("preliminary_classification") or {}).items() if k in known_preliminary_keys}
+            ) if result_state.get("preliminary_classification") else None,
+            "verification_result": VerificationResult(
+                **{k: v for k, v in (result_state.get("verification") or {}).items() if k in known_verification_keys}
+            ) if result_state.get("verification") else None,
+            "evaluation": result_state.get("evaluation"),
+            "table_context_analysis": table_context,
+        }
 
-        for i, (field, result_data) in enumerate(zip(fields, batch_results_data)):
-            # Get feature analysis from batch result
-            feature_analysis_data = result_data.get("feature_analysis", {})
-            feature_analysis = FeatureAnalysisResult(
-                **{k: v for k, v in feature_analysis_data.items() if k in known_feature_keys}
-            )
-
-            # Get preliminary classification from batch result
-            preliminary_data = {
-                "predictions": result_data.get("predictions", []),
-                "total_confidence": result_data.get("total_confidence", 0.0),
-            }
-            preliminary_result = PreliminaryResult(
-                **{k: v for k, v in preliminary_data.items() if k in known_preliminary_keys}
-            )
-
-            # Collect predictions and labels for final result
-            predictions = preliminary_data.get("predictions", [])
-            final_labels = [p["data_item"] for p in predictions]
-            final_avg_confidence = (
-                sum(p["confidence"] for p in predictions) / len(predictions)
-                if predictions else 0.0
-            )
-
-            # Self-verification is skipped in batch mode for speed
-            # If you need verification, use individual classify() calls
-            verification_result: VerificationResult = {
-                "verified_predictions": [],
-                "removed_false_positives": [],
-                "added_missing": [],
-                "average_confidence": final_avg_confidence,
-                "cross_validation_note": "",
-                "suggests_reclassification": False,
-            }
-
-            # Handle evaluation if ground truth provided
-            evaluation_result = None
-            if ground_truth_list and i < len(ground_truth_list):
-                # Run simple evaluation right here for this field
-                gt = ground_truth_list[i]
-                pred_set = set(final_labels)
-                gt_set = set(gt)
-                correct = list(pred_set & gt_set)
-                wrong = list(pred_set - gt_set)
-                missing = list(gt_set - pred_set)
-                exact_match = pred_set == gt_set
-
-                from classification_agent.types.schemas import EvaluationResult, SingleEvaluationResult
-                single_result: SingleEvaluationResult = {
-                    "predicted_data_items": final_labels,
-                    "ground_truth_data_items": gt,
-                    "correct_predictions": correct,
-                    "wrong_predictions": wrong,
-                    "missing_predictions": missing,
-                    "exact_match": exact_match,
-                }
-                evaluation_result: EvaluationResult = {
-                    "total_samples": 1,
-                    "exact_match_count": 1 if exact_match else 0,
-                    "exact_match_accuracy": 1.0 if exact_match else 0.0,
-                    "total_true_positives": len(correct),
-                    "total_false_positives": len(wrong),
-                    "total_false_negatives": len(missing),
-                    "macro_precision": len(correct) / (len(correct) + len(wrong)) if (len(correct) + len(wrong)) > 0 else 0.0,
-                    "macro_recall": len(correct) / (len(correct) + len(missing)) if (len(correct) + len(missing)) > 0 else 0.0,
-                    "macro_f1": 0.0,
-                    "per_sample_results": [single_result],
-                }
-                if (len(correct) + len(wrong)) > 0 and (len(correct) + len(missing)) > 0:
-                    p = len(correct) / (len(correct) + len(wrong))
-                    r = len(correct) / (len(correct) + len(missing))
-                    if p + r > 0:
-                        evaluation_result["macro_f1"] = 2 * p * r / (p + r)
-
-            classification_result: ClassificationResult = {
-                "final_predictions": predictions,
-                "final_labels": final_labels,
-                "final_confidence": final_avg_confidence,
-                "reasoning_chain": [
-                    f"table_context: {table_context['inferred_purpose'] if table_context else 'none'}",
-                    f"batch_classification: {len(fields)} fields in one call",
-                ],
-                "feature_analysis": feature_analysis,
-                "preliminary_result": preliminary_result,
-                "verification_result": verification_result,
-                "evaluation": evaluation_result,
-            }
-
-            final_results.append(classification_result)
-
-        logger.info(
-            "ClassificationAgent.classify_table: processed %d fields in one LLM call",
-            len(fields)
-        )
-
-        return final_results
+        return classification_result

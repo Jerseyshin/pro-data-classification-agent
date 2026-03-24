@@ -63,6 +63,7 @@ def load_data_csv(
     csv_path: str | Path,
     include_ground_truth: bool = True,
     skip_empty_gt: bool = True,
+    encoding: str = "utf-8-sig",
 ) -> Tuple[List[TableFieldInput], Optional[List[List[str]]]]:
     """
     读取 data.csv，返回批量输入。
@@ -71,6 +72,7 @@ def load_data_csv(
         csv_path: CSV 文件路径
         include_ground_truth: 是否返回真实标签，False 只返回输入
         skip_empty_gt: 是否跳过真实标签为空的行，只在 include_ground_truth=True 生效
+        encoding: 文件编码，默认 "utf-8-sig"，可指定为 "GB18030"
 
     Returns:
         (inputs, ground_truths) 元组：
@@ -85,7 +87,7 @@ def load_data_csv(
     inputs: List[TableFieldInput] = []
     ground_truths: List[List[str]] = []
 
-    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+    with open(csv_path, encoding=encoding, newline="") as f:
         reader = csv.reader(f)
         next(reader)  # 跳过表头
 
@@ -142,6 +144,7 @@ def load_data_csv(
 def load_data_csv_with_gt(
     csv_path: str | Path,
     skip_empty_gt: bool = True,
+    encoding: str = "utf-8-sig",
 ) -> List[TableFieldInputWithGroundTruth]:
     """
     便捷方法：读取 data.csv 直接返回带真实标签的列表。
@@ -149,11 +152,12 @@ def load_data_csv_with_gt(
     Args:
         csv_path: CSV 文件路径
         skip_empty_gt: 是否跳过真实标签为空的行
+        encoding: 文件编码，默认 "utf-8-sig"，可指定为 "GB18030"
 
     Returns:
         List[TableFieldInputWithGroundTruth]
     """
-    inputs, gts = load_data_csv(csv_path, include_ground_truth=True, skip_empty_gt=skip_empty_gt)
+    inputs, gts = load_data_csv(csv_path, include_ground_truth=True, skip_empty_gt=skip_empty_gt, encoding=encoding)
     if gts is None:
         return []
     return [
@@ -166,6 +170,7 @@ def load_rag_training_data(
     csv_path: str | Path,
     hierarchical_categories: List[HierarchicalCategory],
     skip_if_not_found: bool = True,
+    encoding: str = "utf-8-sig",
 ) -> List[Tuple[TableFieldInput, HierarchicalCategory]]:
     """
     从 CSV 加载 RAG 训练数据，每个样本都有标注好的真实标签，输出格式直接可以传给
@@ -182,6 +187,7 @@ def load_rag_training_data(
         hierarchical_categories: 完整的层级分类体系（用于查找标签对应的完整 HierarchicalCategory）
         skip_if_not_found: 如果标签在分类体系中找不到，是否跳过这个样本；
             如果 False，找不到会抛出 ValueError
+        encoding: 文件编码，默认 "utf-8-sig"，可指定为 "GB18030"
 
     Returns:
         List[Tuple[TableFieldInput, HierarchicalCategory]]: 每个元素是 (输入字段, 正确分类标签)
@@ -203,7 +209,7 @@ def load_rag_training_data(
 
     result: List[Tuple[TableFieldInput, HierarchicalCategory]] = []
 
-    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+    with open(csv_path, encoding=encoding, newline="") as f:
         reader = csv.reader(f)
         next(reader)  # 跳过表头
 

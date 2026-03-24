@@ -30,7 +30,17 @@ class OpenAILLM(BaseLLM):
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        content = response.choices[0].message.content
+        # Handle case where response is already a JSON string (some non-OpenAI compatible providers
+        # that return the raw JSON string instead of parsed object
+        if isinstance(response, str):
+            # Parse JSON string to dict then extract content
+            response = json.loads(response)
+        # Now response should be a dict or parsed object
+        if isinstance(response, dict):
+            content = response["choices"][0]["message"]["content"]
+        else:
+            # Normal OpenAI client parsed object
+            content = response.choices[0].message.content
         return content.strip() if content else ""
 
     def generate_json(
@@ -106,7 +116,17 @@ class OpenAILLM(BaseLLM):
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        content = response.choices[0].message.content
+        # Handle case where response is already a JSON string (some non-OpenAI compatible providers
+        # that return the raw JSON string instead of parsed object
+        if isinstance(response, str):
+            # Parse JSON string to dict then extract content
+            response = json.loads(response)
+        # Now response should be a dict or parsed object
+        if isinstance(response, dict):
+            content = response["choices"][0]["message"]["content"]
+        else:
+            # Normal OpenAI client parsed object
+            content = response.choices[0].message.content
         return content.strip() if content else ""
 
     async def agenerate_json(

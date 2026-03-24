@@ -27,12 +27,13 @@ _COL_SUBITEM_NAME = 4   # 数据子项
 _COL_DESCRIPTION  = 7   # 数据子项隐私声明描述
 
 
-def load_label_csv(csv_path: str | Path) -> List[HierarchicalCategory]:
+def load_label_csv(csv_path: str | Path, encoding: str = "utf-8-sig") -> List[HierarchicalCategory]:
     """
     读取 label.csv，返回去重合并后的 HierarchicalCategory 列表。
 
     Args:
         csv_path: label.csv 的路径（绝对或相对路径均可）。
+        encoding: 文件编码，默认 "utf-8-sig"，可指定为 "GB18030"
 
     Returns:
         HierarchicalCategory 列表，每个 data_item 只出现一次，
@@ -50,7 +51,7 @@ def load_label_csv(csv_path: str | Path) -> List[HierarchicalCategory]:
     # key: (level1, level2, data_item)  value: set of subitem names
     subitem_seen: dict[tuple[str, str, str], set[str]] = {}
 
-    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+    with open(csv_path, encoding=encoding, newline="") as f:
         reader = csv.reader(f)
         next(reader)  # 跳过表头
 

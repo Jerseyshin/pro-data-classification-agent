@@ -22,10 +22,158 @@ from .edges import after_verification_router, should_retrieve_router
 
 def should_evaluate_router(state: ClassificationState) -> str:
     """Router: 如果有 ground_truth，就走评估节点，否则直接结束"""
-    if state.get("ground_truth_data_items") is not None or state.get("ground_truth_list") is not None:
-        return "evaluation"
+    # Check if we're in batch mode and all fields done
+    remaining = state.get("remaining_inputs")
+    if remaining is not None and len(remaining) > 0:
+        # Still fields left, go to next field
+        return "next_batch_field_node"
+    elif state.get("ground_truth_list") is not None or state.get("ground_truth_data_items") is not None:
+        # All done, has ground truth -> evaluate
+        return "evaluation_node"
     else:
+        # All done, no ground truth -> end
         return "end"
+
+
+# Note: settings is captured from the outer scope in build_graph
+def create_next_after_context_router(settings: Settings):
+    def next_after_context_router(state: ClassificationState) -> str:
+        """After context analysis, decide next step based on whether it's batch mode and RAG enabled"""
+        if state.get("inputs") is not None and len(state.get("inputs", [])) > 0:
+            # Batch mode: after context, check if we need RAG retrieval
+            if state.get("rag_enabled") and state.get("retrieved_examples") is None:
+                return "rag_retrieval_node"
+            else:
+                # Batch mode: after RAG (if any), ready to process first field (serial mode)
+                # Note: Parallel mode is now handled at agent.classify_table level
+                return "prepare_first_batch_node"
+        else:
+            # Single field mode: check if we need RAG retrieval
+            if state.get("rag_enabled") and state.get("retrieved_examples") is None:
+                return "rag_retrieval_node"
+            else:
+                if settings.fast_mode:
+                    return "combined_feature_classification_node"
+                else:
+                    return "feature_analysis_node"
+    return next_after_context_router
+
+
+def create_after_rag_router(settings: Settings):
+    def after_rag_router(state: ClassificationState) -> str:
+        """After RAG retrieval, where to go next"""
+        if state.get("inputs") is not None and len(state.get("inputs", [])) > 0:
+            # Batch mode: after RAG, prepare first field
+            return "prepare_first_batch_node"
+        else:
+            # Single field mode: go to feature/classification
+            if settings.fast_mode:
+                return "combined_feature_classification_node"
+            else:
+                return "feature_analysis_node"
+    return after_rag_router
+
+
+def prepare_first_batch(state: ClassificationState) -> dict:
+    """Prepare for first batch field processing: take first field from inputs"""
+    inputs = state["inputs"]
+    ground_truth_list = state.get("ground_truth_list")
+
+    # Take first field
+    first_field = inputs[0]
+    if len(inputs) > 1:
+        remaining_inputs = inputs[1:]
+    else:
+        remaining_inputs = []
+
+    # Prepare ground truth if available
+    remaining_gt = None
+    current_gt = None
+    if ground_truth_list and len(ground_truth_list) > 0:
+        current_gt = ground_truth_list[0]
+        if len(ground_truth_list) > 1:
+            remaining_gt = ground_truth_list[1:]
+        else:
+            remaining_gt = []
+
+    return {
+        "input": first_field,
+        "remaining_inputs": remaining_inputs,
+        "remaining_ground_truth": remaining_gt,
+        "ground_truth_data_items": current_gt,
+        "completed_results": [],
+    }
+
+
+def next_batch_field(state: ClassificationState) -> dict:
+    """Save completed result and take next field from remaining_inputs"""
+    # Save current result to completed_results
+    from classification_agent.types.schemas import ClassificationResult
+
+    # Build classification result for current field
+    known_feature_keys = {"table_name_keywords", "field_name_keywords", "description_keywords",
+                          "semantic_summary", "consistency_analysis", "dominant_source"}
+    known_preliminary_keys = {"predictions", "total_confidence"}
+    known_verification_keys = {"verified_predictions", "removed_false_positives", "added_missing",
+                               "average_confidence", "cross_validation_note", "suggests_reclassification"}
+
+    feature_analysis = state["feature_analysis"]
+    preliminary = state["preliminary_classification"]
+    verification = state.get("verification") or {}
+
+    classification_result: ClassificationResult = {
+        "final_predictions": state.get("_final_predictions", []),
+        "final_labels": state.get("_final_labels", []),
+        "final_confidence": state.get("_final_avg_confidence", 0.0),
+        "reasoning_chain": state.get("_reasoning_chain", []),
+        "feature_analysis": {k: v for k, v in feature_analysis.items() if k in known_feature_keys},
+        "preliminary_result": {k: v for k, v in preliminary.items() if k in known_preliminary_keys},
+        "verification_result": {k: v for k, v in verification.items() if k in known_verification_keys},
+        "evaluation": None,
+        "table_context_analysis": state.get("table_context_analysis"),
+    }
+
+    # Add to completed results
+    completed = state.get("completed_results", [])
+    completed.append(classification_result)
+
+    # Take next field
+    remaining = state.get("remaining_inputs", [])
+    remaining_gt = state.get("remaining_ground_truth")
+
+    if len(remaining) > 0:
+        next_field = remaining[0]
+        new_remaining = remaining[1:]
+        next_gt = None
+        if remaining_gt and len(remaining_gt) > 0:
+            next_gt = remaining_gt[0]
+            new_remaining_gt = remaining_gt[1:] if len(remaining_gt) > 1 else []
+        else:
+            new_remaining_gt = []
+
+        # Reset for next field
+        return {
+            "completed_results": completed,
+            "input": next_field,
+            "remaining_inputs": new_remaining,
+            "ground_truth_data_items": next_gt,
+            "remaining_ground_truth": new_remaining_gt,
+            # Reset per-field state
+            "feature_analysis": None,
+            "preliminary_classification": None,
+            "verification": None,
+            "_final_predictions": None,
+            "_final_labels": None,
+            "_final_avg_confidence": None,
+            "_reasoning_chain": None,
+            "reclassification_count": 0,
+            "hallucinated_data_items": [],
+        }
+    else:
+        # No more fields, keep completed and go to evaluation
+        return {
+            "completed_results": completed,
+        }
 
 
 def build_graph(
@@ -42,6 +190,26 @@ def build_graph(
 
     If enable_table_context is True: add context_analysis node at the beginning
     to analyze whole table context before field-level classification.
+
+    **Batch mode flow (multiple fields in one table):**
+    1. context_analysis_node - analyze whole table context (once, shared by all fields)
+    2. rag_retrieval_node (optional) - retrieve similar examples based on table context
+    3. prepare_first_batch_node - extract first field to process
+    4. feature_analysis_node - analyze current field features (with table context)
+    5. preliminary_classification_node - preliminary classification
+    6. self_verification_node - self-verification to remove hallucinations/false positives
+    7. final_result_node - aggregate final result for current field
+    8. Check if more fields remaining:
+       - If yes: next_batch_field_node -> feature_analysis_node (loop)
+       - If no: evaluation_node (if ground truth provided) -> END
+
+    **Single field flow:**
+    Same as before: context_analysis -> (rag) -> feature -> preliminary -> verification -> final -> evaluation
+
+    **Parallel batch flow (now handled at agent level):**
+    - context_analysis done once
+    - all fields processed in parallel via thread pool
+    - results collected and returned
     """
 
     # 创建节点
@@ -53,8 +221,8 @@ def build_graph(
     # 构建图
     workflow = StateGraph(ClassificationState)
 
-    # Always add RAG node (required for conditional edge validation in LangGraph)
-    # When RAG is disabled, router will never select this path, so node is never executed
+    # Always add all nodes (required for LangGraph validation - conditional routing requires all targets exist)
+    # Add RAG node
     if vector_store and embeddings:
         rag_retrieval = RAGRetrievalNode(llm, settings, vector_store, embeddings)
     else:
@@ -65,131 +233,110 @@ def build_graph(
             def process(self, state: ClassificationState) -> Dict[str, Any]:
                 return {"retrieved_examples": None}
         rag_retrieval = DummyRAGNode(llm)
-    workflow.add_node("rag_retrieval", rag_retrieval.process)
+    workflow.add_node("rag_retrieval_node", rag_retrieval.process)
 
-    if enable_table_context:
-        # Add context analysis at the very beginning
-        workflow.add_node("context_analysis", context_analysis.process)
-        workflow.set_entry_point("context_analysis")
-
-        if settings.fast_mode:
-            # Fast mode: combined feature analysis + preliminary classification
-            combined = CombinedFeatureAndClassificationNode(llm)
-            workflow.add_node("combined_feature_classification", combined.process)
-
-            # After context analysis, RAG retrieval if needed, then go to combined
-            def next_after_context_router(state: ClassificationState) -> str:
-                if state.get("rag_enabled") and state.get("retrieved_examples") is None:
-                    return "rag_retrieval"
-                else:
-                    return "combined_feature_classification"
-
-            workflow.add_conditional_edges(
-                "context_analysis",
-                next_after_context_router,
-                {
-                    "rag_retrieval": "rag_retrieval",
-                    "combined_feature_classification": "combined_feature_classification",
-                }
-            )
-        else:
-            # Normal mode: separate nodes
-            feature_analysis = FeatureAnalysisNode(llm)
-            preliminary_classification = PreliminaryClassificationNode(llm)
-            workflow.add_node("feature_analysis", feature_analysis.process)
-            workflow.add_node("preliminary_classification", preliminary_classification.process)
-
-            # After context analysis, RAG retrieval if needed, then go to feature analysis
-            def next_after_context_router(state: ClassificationState) -> str:
-                if state.get("rag_enabled") and state.get("retrieved_examples") is None:
-                    return "rag_retrieval"
-                else:
-                    return "feature_analysis"
-
-            workflow.add_conditional_edges(
-                "context_analysis",
-                next_after_context_router,
-                {
-                    "rag_retrieval": "rag_retrieval",
-                    "feature_analysis": "feature_analysis",
-                }
-            )
-            # RAG检索完去特征分析
-            workflow.add_edge("rag_retrieval", "feature_analysis")
-            # 特征分析完去初步分类
-            workflow.add_edge("feature_analysis", "preliminary_classification")
-    else:
-        # No table context analysis, start directly with feature/classification
-        if settings.fast_mode:
-            # Fast mode: combined feature analysis + preliminary classification
-            combined = CombinedFeatureAndClassificationNode(llm)
-            workflow.add_node("combined_feature_classification", combined.process)
-            workflow.set_entry_point("combined_feature_classification")
-
-            # After combined, RAG retrieval if needed, then go to self verification
-            workflow.add_conditional_edges(
-                "combined_feature_classification",
-                should_retrieve_router,
-                {
-                    "rag_retrieval": "rag_retrieval",
-                    "self_verification": "self_verification",
-                }
-            )
-        else:
-            # Normal mode: separate nodes
-            feature_analysis = FeatureAnalysisNode(llm)
-            preliminary_classification = PreliminaryClassificationNode(llm)
-            workflow.add_node("feature_analysis", feature_analysis.process)
-            workflow.add_node("preliminary_classification", preliminary_classification.process)
-            workflow.set_entry_point("feature_analysis")
-
-            # 条件边：根据是否启用RAG决定走检索还是直接到初步分类
-            workflow.add_conditional_edges(
-                "feature_analysis",
-                should_retrieve_router,
-                {
-                    "rag_retrieval": "rag_retrieval",
-                    "preliminary_classification": "preliminary_classification",
-                }
-            )
-            # RAG检索完去初步分类
-            workflow.add_edge("rag_retrieval", "preliminary_classification")
+    # Always add all single mode nodes regardless of fast_mode for langgraph validation
+    # Some routes reference them even if they aren't used
+    feature_analysis = FeatureAnalysisNode(llm)
+    preliminary_classification = PreliminaryClassificationNode(llm)
+    combined = CombinedFeatureAndClassificationNode(llm)
+    workflow.add_node("feature_analysis_node", feature_analysis.process)
+    workflow.add_node("preliminary_classification_node", preliminary_classification.process)
+    workflow.add_node("combined_feature_classification_node", combined.process)
 
     # Add common nodes
-    workflow.add_node("self_verification", self_verification.process)
-    workflow.add_node("final_result", final_result.process)
-    workflow.add_node("evaluation", evaluation.process)
+    workflow.add_node("context_analysis_node", context_analysis.process)
+    workflow.add_node("self_verification_node", self_verification.process)
+    workflow.add_node("final_result_node", final_result.process)
+    workflow.add_node("evaluation_node", evaluation.process)
 
-    # After preliminary classification go to self verification
+    # Add batch preparation node (serial mode - kept for backward compatibility)
+    workflow.add_node("prepare_first_batch_node", prepare_first_batch)
+    workflow.add_node("next_batch_field_node", next_batch_field)
+
+    if enable_table_context:
+        # With table context: start at context analysis
+        workflow.set_entry_point("context_analysis_node")
+
+        # After context analysis -> route based on batch/single and RAG
+        next_after_context = create_next_after_context_router(settings)
+        workflow.add_conditional_edges(
+            "context_analysis_node",
+            next_after_context,
+            {
+                "rag_retrieval_node": "rag_retrieval_node",
+                "prepare_first_batch_node": "prepare_first_batch_node",
+                "feature_analysis_node": "feature_analysis_node",
+                "combined_feature_classification_node": "combined_feature_classification_node",
+            }
+        )
+
+        # After RAG retrieval -> where to go next
+        after_rag = create_after_rag_router(settings)
+        workflow.add_conditional_edges(
+            "rag_retrieval_node",
+            after_rag,
+            {
+                "prepare_first_batch_node": "prepare_first_batch_node",
+                "feature_analysis_node": "feature_analysis_node",
+                "combined_feature_classification_node": "combined_feature_classification_node",
+            }
+        )
+    else:
+        # Without table context: not implemented for batch mode yet
+        # Entry directly goes to feature/combined for single mode
+        if settings.fast_mode:
+            workflow.set_entry_point("combined_feature_classification_node")
+        else:
+            workflow.set_entry_point("feature_analysis_node")
+
+    # After prepare first batch -> go to feature/combined based on fast_mode (serial mode)
+    if settings.fast_mode:
+        workflow.add_edge("prepare_first_batch_node", "combined_feature_classification_node")
+    else:
+        workflow.add_edge("prepare_first_batch_node", "feature_analysis_node")
+
+    # Single mode normal: feature -> preliminary -> self verification
     if not settings.fast_mode:
-        workflow.add_edge("preliminary_classification", "self_verification")
-    # After combined go directly to self verification
-    if settings.fast_mode and enable_table_context:
-        workflow.add_edge("combined_feature_classification", "self_verification")
-    # RAG检索完去自验证
-    if not enable_table_context:
-        workflow.add_edge("rag_retrieval", "self_verification")
+        workflow.add_edge("feature_analysis_node", "preliminary_classification_node")
+        workflow.add_edge("preliminary_classification_node", "self_verification_node")
 
-    # 后续边保持不变
+    # Single mode fast mode: combined -> self verification
+    if settings.fast_mode:
+        if enable_table_context:
+            workflow.add_edge("combined_feature_classification_node", "self_verification_node")
+        # For batch mode, edge added after prepare_first_batch above
+        if not enable_table_context:
+            pass  # handled by entry point
+
+    # Self verification -> conditional to reclassify or final
     workflow.add_conditional_edges(
-        "self_verification",
+        "self_verification_node",
         after_verification_router,
         {
-            "preliminary_classification": "combined_feature_classification" if settings.fast_mode else "preliminary_classification",
-            "final_result": "final_result",
+            "preliminary_classification_node": "combined_feature_classification_node" if settings.fast_mode else "preliminary_classification_node",
+            "final_result_node": "final_result_node",
         }
     )
 
-    # 条件边：如果提供了 ground truth，走评估；否则直接结束
+    # Final result (single mode or serial mode) -> check if more fields remaining, then evaluate or end
     workflow.add_conditional_edges(
-        "final_result",
+        "final_result_node",
         should_evaluate_router,
         {
-            "evaluation": "evaluation",
+            "next_batch_field_node": "next_batch_field_node",
+            "evaluation_node": "evaluation_node",
             "end": END,
         }
     )
-    # 评估完结束
-    workflow.add_edge("evaluation", END)
+
+    # Next field -> back to feature/combined based on fast_mode (serial mode)
+    if settings.fast_mode:
+        workflow.add_edge("next_batch_field_node", "combined_feature_classification_node")
+    else:
+        workflow.add_edge("next_batch_field_node", "feature_analysis_node")
+
+    # Evaluation always ends
+    workflow.add_edge("evaluation_node", END)
 
     return workflow

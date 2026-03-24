@@ -187,7 +187,7 @@ class SelfVerificationNode(BaseNode):
         existing_hallucinations = state.get("hallucinated_data_items", [])
         existing_hallucinations.extend(hallucinated_data_items)
         # Deduplicate
-        existing_hallucinations = list(dict.fromkeys(existing_hallucinated_data_items))
+        existing_hallucinations = list(dict.fromkeys(existing_hallucinations))
 
         return {
             "verification": result,

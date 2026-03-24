@@ -26,6 +26,7 @@ def export_results_to_csv(
     inputs: List[TableFieldInput],
     results: List[ClassificationResult],
     evaluation: Optional[EvaluationResult] = None,
+    encoding: str = "utf-8",
 ) -> None:
     """
     Export batch classification results to CSV file.
@@ -44,6 +45,7 @@ def export_results_to_csv(
         results: List of corresponding classification results
         evaluation: Optional overall evaluation result (when ground truth provided)
             If None, will try to aggregate from per-result evaluation (whole-table mode).
+        encoding: Output file encoding, default "utf-8", can use "GB18030"
     """
     file_path = Path(file_path)
 
@@ -51,7 +53,7 @@ def export_results_to_csv(
     if evaluation is None:
         evaluation = aggregate_evaluation_from_results(results)
 
-    with open(file_path, 'w', encoding='utf-8', newline='') as f:
+    with open(file_path, 'w', encoding=encoding, newline='') as f:
         writer = csv.writer(f)
 
         # Write header
@@ -211,6 +213,7 @@ def export_results_to_markdown(
     inputs: List[TableFieldInput],
     results: List[ClassificationResult],
     evaluation: Optional[EvaluationResult] = None,
+    encoding: str = "utf-8",
 ) -> None:
     """
     Export batch classification results to Markdown file with:
@@ -223,6 +226,7 @@ def export_results_to_markdown(
         results: List of corresponding classification results
         evaluation: Optional overall evaluation result (when ground truth provided)
             If None, will try to aggregate from per-result evaluation (whole-table mode).
+        encoding: Output file encoding, default "utf-8", can use "GB18030"
     """
     file_path = Path(file_path)
 
@@ -230,7 +234,7 @@ def export_results_to_markdown(
     if evaluation is None:
         evaluation = aggregate_evaluation_from_results(results)
 
-    with open(file_path, 'w', encoding='utf-8') as f:
+    with open(file_path, 'w', encoding=encoding) as f:
         # Title
         f.write("# Classification Batch Evaluation Results\n\n")
 
@@ -374,6 +378,7 @@ def export_batch_results(
     results: List[ClassificationResult],
     evaluation: Optional[EvaluationResult] = None,
     base_name: str = "evaluation_results",
+    encoding: str = "utf-8",
 ) -> tuple[Path, Path]:
     """
     Export results to both CSV and Markdown formats.
@@ -384,6 +389,7 @@ def export_batch_results(
         results: List of classification results
         evaluation: Optional evaluation result
         base_name: Base name for output files
+        encoding: Output file encoding, default "utf-8", can use "GB18030"
 
     Returns:
         (csv_path, markdown_path) tuple
@@ -394,7 +400,7 @@ def export_batch_results(
     csv_path = outputs_dir / f"{base_name}.csv"
     md_path = outputs_dir / f"{base_name}.md"
 
-    export_results_to_csv(csv_path, inputs, results, evaluation)
-    export_results_to_markdown(md_path, inputs, results, evaluation)
+    export_results_to_csv(csv_path, inputs, results, evaluation, encoding=encoding)
+    export_results_to_markdown(md_path, inputs, results, evaluation, encoding=encoding)
 
     return csv_path, md_path

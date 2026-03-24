@@ -18,10 +18,16 @@ class FinalResultNode(BaseNode):
 
         # Process verified predictions from preliminary
         for verified in verification["verified_predictions"]:
-            if verified["is_kept"]:
-                pred = verified["original_prediction"].copy()
-                pred["confidence"] = verified["adjusted_confidence"]
-                final_predictions.append(pred)
+            # Check if is_kept exists (LLM output format), default to keeping if missing
+            if verified.get("is_kept", True):
+                if "original_prediction" in verified:
+                    pred = verified["original_prediction"].copy()
+                    if "adjusted_confidence" in verified:
+                        pred["confidence"] = verified["adjusted_confidence"]
+                    final_predictions.append(pred)
+                elif "level1" in verified and "level2" in verified and "data_item" in verified:
+                    # Direct prediction format from LLM, add as new prediction
+                    final_predictions.append(verified)
 
         # Add any new predictions discovered during verification
         for added in verification.get("added_missing", []):
