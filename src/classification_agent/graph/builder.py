@@ -13,6 +13,11 @@ from classification_agent.nodes import (
     RAGRetrievalNode,
     EvaluationNode,
 )
+# Import bulk processing nodes
+from classification_agent.nodes.bulk_feature_analysis import BulkFeatureAnalysisNode
+from classification_agent.nodes.bulk_preliminary_classification import BulkPreliminaryClassificationNode
+from classification_agent.nodes.bulk_self_verification import BulkSelfVerificationNode
+from classification_agent.nodes.bulk_final_result import BulkFinalResultNode
 from classification_agent.nodes.base_node import BaseNode
 from classification_agent.config.settings import Settings
 from classification_agent.rag.embeddings import BaseEmbeddings
@@ -22,7 +27,14 @@ from .edges import after_verification_router, should_retrieve_router
 
 def should_evaluate_router(state: ClassificationState) -> str:
     """Router: 如果有 ground_truth，就走评估节点，否则直接结束"""
-    # Check if we're in batch mode and all fields done
+    # Check if bulk mode - after bulk final result, go directly to evaluate or end
+    if state.get("bulk_mode"):
+        if state.get("ground_truth_list") is not None:
+            return "evaluation_node"
+        else:
+            return "end"
+
+    # Original single/serial batch mode logic
     remaining = state.get("remaining_inputs")
     if remaining is not None and len(remaining) > 0:
         # Still fields left, go to next field
@@ -38,9 +50,18 @@ def should_evaluate_router(state: ClassificationState) -> str:
 # Note: settings is captured from the outer scope in build_graph
 def create_next_after_context_router(settings: Settings):
     def next_after_context_router(state: ClassificationState) -> str:
-        """After context analysis, decide next step based on whether it's batch mode and RAG enabled"""
+        """After context analysis, decide next step based on bulk mode and RAG enabled"""
+        # Check if we're in bulk table-level processing mode
+        if state.get("bulk_mode"):
+            # Bulk mode: after context, check if we need RAG retrieval
+            if state.get("rag_enabled") and state.get("retrieved_examples") is None:
+                return "rag_retrieval_node"
+            else:
+                # Bulk mode: directly go to bulk feature analysis (all fields in one go)
+                return "bulk_feature_analysis_node"
+
         if state.get("inputs") is not None and len(state.get("inputs", [])) > 0:
-            # Batch mode: after context, check if we need RAG retrieval
+            # Serial Batch mode: after context, check if we need RAG retrieval
             if state.get("rag_enabled") and state.get("retrieved_examples") is None:
                 return "rag_retrieval_node"
             else:
@@ -62,6 +83,11 @@ def create_next_after_context_router(settings: Settings):
 def create_after_rag_router(settings: Settings):
     def after_rag_router(state: ClassificationState) -> str:
         """After RAG retrieval, where to go next"""
+        # Check if bulk mode
+        if state.get("bulk_mode"):
+            # Bulk mode: after RAG, directly to bulk feature analysis
+            return "bulk_feature_analysis_node"
+
         if state.get("inputs") is not None and len(state.get("inputs", [])) > 0:
             # Batch mode: after RAG, prepare first field
             return "prepare_first_batch_node"
@@ -191,11 +217,22 @@ def build_graph(
     If enable_table_context is True: add context_analysis node at the beginning
     to analyze whole table context before field-level classification.
 
-    **Batch mode flow (multiple fields in one table):**
+    **Bulk Table-Level Processing (new mode - one LLM call per step for all fields):**
+    1. context_analysis_node - analyze whole table context (once)
+    2. rag_retrieval_node (optional) - retrieve similar examples based on table context
+    3. bulk_feature_analysis_node - analyze ALL fields in ONE LLM call
+    4. bulk_preliminary_classification_node - classify ALL fields in ONE LLM call
+    5. bulk_self_verification_node - verify ALL fields in ONE LLM call
+    6. bulk_final_result_node - aggregate all results
+    7. evaluation_node (if ground truth provided) -> END
+
+    **Total LLM calls for bulk mode: 3-4 calls total regardless of number of fields**
+
+    **Serial Batch mode flow (multiple fields in one table, original):**
     1. context_analysis_node - analyze whole table context (once, shared by all fields)
     2. rag_retrieval_node (optional) - retrieve similar examples based on table context
     3. prepare_first_batch_node - extract first field to process
-    4. feature_analysis_node - analyze current field features (with table context)
+    4. feature_analysis_node - analyze current field features
     5. preliminary_classification_node - preliminary classification
     6. self_verification_node - self-verification to remove hallucinations/false positives
     7. final_result_node - aggregate final result for current field
@@ -206,7 +243,7 @@ def build_graph(
     **Single field flow:**
     Same as before: context_analysis -> (rag) -> feature -> preliminary -> verification -> final -> evaluation
 
-    **Parallel batch flow (now handled at agent level):**
+    **Parallel batch flow (handled at agent level):**
     - context_analysis done once
     - all fields processed in parallel via thread pool
     - results collected and returned
@@ -217,6 +254,12 @@ def build_graph(
     self_verification = SelfVerificationNode(llm)
     final_result = FinalResultNode(llm)
     evaluation = EvaluationNode(llm)
+
+    # 创建批量处理节点（表级一次性处理）
+    bulk_feature_analysis = BulkFeatureAnalysisNode(llm)
+    bulk_preliminary_classification = BulkPreliminaryClassificationNode(llm)
+    bulk_self_verification = BulkSelfVerificationNode(llm)
+    bulk_final_result = BulkFinalResultNode(llm)
 
     # 构建图
     workflow = StateGraph(ClassificationState)
@@ -244,6 +287,12 @@ def build_graph(
     workflow.add_node("preliminary_classification_node", preliminary_classification.process)
     workflow.add_node("combined_feature_classification_node", combined.process)
 
+    # Add bulk processing nodes (always add for validation)
+    workflow.add_node("bulk_feature_analysis_node", bulk_feature_analysis.process)
+    workflow.add_node("bulk_preliminary_classification_node", bulk_preliminary_classification.process)
+    workflow.add_node("bulk_self_verification_node", bulk_self_verification.process)
+    workflow.add_node("bulk_final_result_node", bulk_final_result.process)
+
     # Add common nodes
     workflow.add_node("context_analysis_node", context_analysis.process)
     workflow.add_node("self_verification_node", self_verification.process)
@@ -254,17 +303,32 @@ def build_graph(
     workflow.add_node("prepare_first_batch_node", prepare_first_batch)
     workflow.add_node("next_batch_field_node", next_batch_field)
 
+    # Add bulk flow edges: bulk_feature -> bulk_preliminary -> bulk_verification -> bulk_final
+    workflow.add_edge("bulk_feature_analysis_node", "bulk_preliminary_classification_node")
+    workflow.add_edge("bulk_preliminary_classification_node", "bulk_self_verification_node")
+    workflow.add_edge("bulk_self_verification_node", "bulk_final_result_node")
+    # After bulk final -> go to evaluation or end via router
+    workflow.add_conditional_edges(
+        "bulk_final_result_node",
+        should_evaluate_router,
+        {
+            "evaluation_node": "evaluation_node",
+            "end": END,
+        }
+    )
+
     if enable_table_context:
         # With table context: start at context analysis
         workflow.set_entry_point("context_analysis_node")
 
-        # After context analysis -> route based on batch/single and RAG
+        # After context analysis -> route based on bulk/single/serial and RAG
         next_after_context = create_next_after_context_router(settings)
         workflow.add_conditional_edges(
             "context_analysis_node",
             next_after_context,
             {
                 "rag_retrieval_node": "rag_retrieval_node",
+                "bulk_feature_analysis_node": "bulk_feature_analysis_node",
                 "prepare_first_batch_node": "prepare_first_batch_node",
                 "feature_analysis_node": "feature_analysis_node",
                 "combined_feature_classification_node": "combined_feature_classification_node",
@@ -277,13 +341,14 @@ def build_graph(
             "rag_retrieval_node",
             after_rag,
             {
+                "bulk_feature_analysis_node": "bulk_feature_analysis_node",
                 "prepare_first_batch_node": "prepare_first_batch_node",
                 "feature_analysis_node": "feature_analysis_node",
                 "combined_feature_classification_node": "combined_feature_classification_node",
             }
         )
     else:
-        # Without table context: not implemented for batch mode yet
+        # Without table context: not implemented for bulk mode yet
         # Entry directly goes to feature/combined for single mode
         if settings.fast_mode:
             workflow.set_entry_point("combined_feature_classification_node")

@@ -51,16 +51,23 @@ class EvaluationNode(BaseNode):
     def process(self, state: ClassificationState) -> Dict[str, Any]:
         """Process evaluation: compare final prediction with ground truth
 
-        Supports both single sample mode and batch table mode:
+        Supports three modes:
         - Single mode: uses ground_truth_data_items + _final_labels
-        - Batch mode: all fields processed, results in completed_results, evaluate all
+        - Serial Batch mode: all fields processed, results in completed_results, evaluate all
+        - Bulk Table mode: all fields processed, results in bulk_final_results, evaluate all
         """
-        # Check if batch mode (all fields processed, results in completed_results)
-        completed_results = state.get("completed_results")
+        # Check for bulk mode first (all fields processed in bulk, results in bulk_final_results)
+        bulk_final_results = state.get("bulk_final_results")
         ground_truth_list = state.get("ground_truth_list")
 
+        if bulk_final_results is not None and ground_truth_list is not None:
+            # Bulk mode: evaluate all bulk results
+            return self._process_batch(bulk_final_results, ground_truth_list)
+
+        # Check if serial batch mode (all fields processed, results in completed_results)
+        completed_results = state.get("completed_results")
         if completed_results is not None and ground_truth_list is not None:
-            # Batch mode: evaluate all completed results
+            # Serial Batch mode: evaluate all completed results
             return self._process_batch(completed_results, ground_truth_list)
         else:
             # Single mode: evaluate one field

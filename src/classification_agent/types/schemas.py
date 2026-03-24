@@ -119,3 +119,19 @@ class ClassificationResult(TypedDict):
     preliminary_result: PreliminaryResult      # 初步分类结果（可追溯）
     verification_result: VerificationResult    # 验证结果（可追溯）
     evaluation: Optional[EvaluationResult]    # 评估结果（仅当提供ground_truth时存在）
+
+
+# Bulk processing types
+class BulkFeatureAnalysisResult(TypedDict):
+    """批量特征分析结果 - 整张表所有字段一次性分析完成"""
+    field_analyses: List[FeatureAnalysisResult]
+
+
+class BulkPreliminaryResult(TypedDict):
+    """批量初步分类结果 - 整张表所有字段一次性分类完成"""
+    field_results: List[PreliminaryResult]
+
+
+class BulkVerificationResult(TypedDict):
+    """批量验证结果 - 整张表所有字段一次性验证完成"""
+    field_verifications: List[VerificationResult]

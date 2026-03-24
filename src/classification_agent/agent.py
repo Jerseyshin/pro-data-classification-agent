@@ -353,15 +353,25 @@ class ClassificationAgent:
         allow_multiple: Optional[bool] = None,
         enable_rag: Optional[bool] = None,
         ground_truth_list: Optional[List[List[str]]] = None,
-        max_workers: int = 10,
+        max_workers: int = 3,
+        bulk_mode: bool = True,
     ) -> List[ClassificationResult]:
         """
-        对整张表所有字段批量分类，**并行处理所有字段**：
-        context_analysis (一次) → (可选rag) → 并行处理每个字段独立完整流程：
-            feature_analysis → preliminary_classification → self_verification → final_result
-        最后汇总结果。表级上下文分析一次，所有字段共享，显著提速。
+        对整张表所有字段批量分类，支持两种模式：
 
-        每个字段都会经过完整的特征分析、初步分类、自我验证，保留幻觉检查和评分。
+        **Bulk Mode (default, new - table-level processing with minimal LLM calls):**
+        context_analysis (once) → (optional rag) → bulk_feature_analysis (ALL fields in one LLM call) →
+        bulk_preliminary_classification (ALL fields in one LLM call) → bulk_self_verification (ALL in one) →
+        bulk_final_result → done.
+
+        **Total LLM calls for bulk mode: 3-4 calls TOTAL regardless of number of fields.**
+        This is the fastest mode, drastically reduces API calls and total processing time.
+
+        **Parallel Mode (original - multiple concurrent threads):**
+        When bulk_mode = False, fall back to original parallel processing:
+        context_analysis (once) → (optional rag) → parallel processing each field:
+            feature_analysis → preliminary_classification → self_verification → final_result
+        (Each field has full pipeline, 4 calls per field).
 
         Args:
             fields: 整张表所有字段，每个元素包含 table_name, field_name, 可选 field_description
@@ -372,7 +382,10 @@ class ClassificationAgent:
             enable_rag: 动态指定是否启用RAG，不指定则使用settings默认
             ground_truth_list: 每个字段对应的真实数据项标签列表，如果提供会自动运行评估
                 len(ground_truth_list) == len(fields)
-            max_workers: 最大并发数，默认10，根据你的API并发限制调整
+            max_workers: 最大并发数（仅用于parallel mode），默认3，根据你的API并发限制调整
+            bulk_mode: 是否启用表级批量处理模式，默认True。
+                When True: ALL fields processed in 3-4 total LLM calls (minimal calls, fastest).
+                When False: use original parallel mode (one full pipeline per field, more calls).
 
         Returns:
             List[ClassificationResult] 每个字段对应一个分类结果，顺序和 fields 一致
@@ -405,14 +418,13 @@ class ClassificationAgent:
             logger.warning("RAG enabled but no examples available, disabling for this classification")
             rag_enabled = False
 
-        # Step 1: Run table-level context analysis once (shared by all fields)
-        # Only if enable_table_context is True (default)
-        table_context = None
-        retrieved_examples = None
-        if self.enable_table_context:
-            logger.info("Running table-level context analysis once (shared by all fields)...")
-            # Initial state just for context analysis and RAG
-            context_initial: ClassificationState = {
+        if bulk_mode:
+            # Bulk Table Mode: entire table processed in one graph run, one LLM call per step
+            logger.info("Starting BULK table classification: %d fields will be processed in %d total LLM calls...",
+                       len(fields), 3 + (1 if enable_rag else 0))
+
+            # Full initial state for bulk processing
+            initial_state: ClassificationState = {
                 "input": None,
                 "inputs": fields,
                 "table_chinese_name": table_chinese_name,
@@ -420,12 +432,19 @@ class ClassificationAgent:
                 "confidence_threshold": threshold,
                 "allow_multiple": multiple,
                 "rag_enabled": rag_enabled,
+                "bulk_mode": True,
                 "ground_truth_data_items": None,
                 "ground_truth_list": ground_truth_list,
                 "remaining_ground_truth": None,
                 "evaluation": None,
                 "retrieved_examples": None,
                 "table_context_analysis": None,
+                # Bulk mode results
+                "bulk_feature_analysis": None,
+                "bulk_preliminary_classification": None,
+                "bulk_verification": None,
+                "bulk_final_results": None,
+                # Legacy fields for compatibility
                 "feature_analysis": None,
                 "preliminary_classification": None,
                 "verification": None,
@@ -437,46 +456,104 @@ class ClassificationAgent:
                 "_final_avg_confidence": None,
                 "_reasoning_chain": None,
             }
-            # Run just context analysis and RAG if needed
-            result = self.graph.invoke(context_initial)
-            table_context = result.get("table_context_analysis")
-            retrieved_examples = result.get("retrieved_examples")
-            logger.info("Table context analysis complete, starting parallel classification of %d fields...", len(fields))
 
-        # Step 2: Process all fields in parallel
-        completed_results: List[ClassificationResult] = [None] * len(fields)
+            # Run the entire bulk graph
+            result_state = self.graph.invoke(initial_state)
 
-        def process_field(i: int, field: TableFieldInput, gt: Optional[List[str]]) -> tuple[int, ClassificationResult]:
-            """Process a single field, keep track of original index for ordering"""
-            result = self._classify_single_with_context(
-                field_input=field,
-                table_context=table_context,
-                retrieved_examples=retrieved_examples,
-                hierarchical_categories=categories,
-                confidence_threshold=threshold,
-                allow_multiple=multiple,
-                enable_rag=rag_enabled,
-                ground_truth_data_items=gt,
+            # Get the bulk final results
+            completed_results = result_state.get("bulk_final_results", [])
+
+            # If evaluation was run, attach the evaluation to the result (optional)
+            evaluation = result_state.get("evaluation")
+
+            logger.info(
+                "Bulk classification complete: %d fields processed with just %d LLM calls total",
+                len(completed_results),
+                3 + (1 if enable_rag else 0) + (1 if evaluation else 0),
             )
-            return (i, result)
 
-        # Use thread pool for parallel execution (LLM calls are IO-bound, threads work well)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for i, field in enumerate(fields):
-                gt = ground_truth_list[i] if ground_truth_list and i < len(ground_truth_list) else None
-                futures.append(executor.submit(process_field, i, field, gt))
+            # Ensure we return the same number of results as input fields
+            if len(completed_results) != len(fields) and len(completed_results) > 0:
+                logger.warning("Number of bulk results (%d) doesn't match number of input fields (%d)",
+                              len(completed_results), len(fields))
 
-            for future in as_completed(futures):
-                i, result = future.result()
-                completed_results[i] = result
+            return completed_results
 
-        logger.info(
-            "ClassificationAgent.classify_table: processed %d fields in parallel",
-            len(completed_results)
-        )
+        else:
+            # Original Parallel Mode: process all fields in parallel with thread pool
+            # Step 1: Run table-level context analysis once (shared by all fields)
+            # Only if enable_table_context is True (default)
+            table_context = None
+            retrieved_examples = None
+            if self.enable_table_context:
+                logger.info("Running table-level context analysis once (shared by all fields)...")
+                # Initial state just for context analysis and RAG
+                context_initial: ClassificationState = {
+                    "input": None,
+                    "inputs": fields,
+                    "table_chinese_name": table_chinese_name,
+                    "hierarchical_categories": categories,
+                    "confidence_threshold": threshold,
+                    "allow_multiple": multiple,
+                    "rag_enabled": rag_enabled,
+                    "bulk_mode": False,
+                    "ground_truth_data_items": None,
+                    "ground_truth_list": ground_truth_list,
+                    "remaining_ground_truth": None,
+                    "evaluation": None,
+                    "retrieved_examples": None,
+                    "table_context_analysis": None,
+                    "feature_analysis": None,
+                    "preliminary_classification": None,
+                    "verification": None,
+                    "completed_results": None,
+                    "reclassification_count": 0,
+                    "hallucinated_data_items": [],
+                    "_final_predictions": None,
+                    "_final_labels": None,
+                    "_final_avg_confidence": None,
+                    "_reasoning_chain": None,
+                }
+                # Run just context analysis and RAG if needed
+                result = self.graph.invoke(context_initial)
+                table_context = result.get("table_context_analysis")
+                retrieved_examples = result.get("retrieved_examples")
+                logger.info("Table context analysis complete, starting parallel classification of %d fields...", len(fields))
 
-        return completed_results
+            # Step 2: Process all fields in parallel
+            completed_results: List[ClassificationResult] = [None] * len(fields)
+
+            def process_field(i: int, field: TableFieldInput, gt: Optional[List[str]]) -> tuple[int, ClassificationResult]:
+                """Process a single field, keep track of original index for ordering"""
+                result = self._classify_single_with_context(
+                    field_input=field,
+                    table_context=table_context,
+                    retrieved_examples=retrieved_examples,
+                    hierarchical_categories=categories,
+                    confidence_threshold=threshold,
+                    allow_multiple=multiple,
+                    enable_rag=rag_enabled,
+                    ground_truth_data_items=gt,
+                )
+                return (i, result)
+
+            # Use thread pool for parallel execution (LLM calls are IO-bound, threads work well)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = []
+                for i, field in enumerate(fields):
+                    gt = ground_truth_list[i] if ground_truth_list and i < len(ground_truth_list) else None
+                    futures.append(executor.submit(process_field, i, field, gt))
+
+                for future in as_completed(futures):
+                    i, result = future.result()
+                    completed_results[i] = result
+
+            logger.info(
+                "ClassificationAgent.classify_table: processed %d fields in parallel",
+                len(completed_results)
+            )
+
+            return completed_results
 
     def _classify_single_with_context(
         self,
