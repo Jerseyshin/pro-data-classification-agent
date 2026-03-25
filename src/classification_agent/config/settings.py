@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     bge_device: str = os.getenv("BGE_DEVICE", "cpu")
     bge_use_fp16: bool = os.getenv("BGE_USE_FP16", "true").lower() == "true"
 
+    # RAG embedding cache settings (Wave 2 T2.1 optimization)
+    # Cache backend options: "memory", "disk", "hybrid", or "none" to disable
+    rag_cache_backend: str = os.getenv("RAG_CACHE_BACKEND", "memory")
+    rag_cache_max_size: int = int(os.getenv("RAG_CACHE_MAX_SIZE", "10000"))
+    rag_cache_ttl_seconds: int = int(os.getenv("RAG_CACHE_TTL_SECONDS", "3600"))
+    rag_cache_dir: str = os.getenv("RAG_CACHE_DIR", ".rag_embeddings_cache")
+    # Set to true to disable caching (not recommended for production)
+    rag_disable_cache: bool = os.getenv("RAG_DISABLE_CACHE", "false").lower() == "true"
+
     # Speed optimization: fast mode merges feature analysis + preliminary classification
     # into one LLM call, reducing network round-trips by ~33%
     # Faster speed with slightly lower accuracy (usually acceptable)

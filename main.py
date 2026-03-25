@@ -18,36 +18,92 @@ Requirements:
 
 import argparse
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-from classification_agent import ClassificationAgent
-from classification_agent.config.default_categories import DEFAULT_DATA_CATEGORIES
-from classification_agent.llm.openai_wrapper import OpenAILLM
-from classification_agent.utils.data_reader import load_data_csv
-from classification_agent.utils.result_exporter import export_batch_results
+# 添加 src 目录到 Python 路径，以便导入模块
+SRC_DIR = Path(__file__).parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+try:
+    from classification_agent import ClassificationAgent
+    from classification_agent.config.default_categories import DEFAULT_DATA_CATEGORIES
+    from classification_agent.llm.openai_wrapper import OpenAILLM
+    from classification_agent.utils.data_reader import load_data_csv
+    from classification_agent.utils.result_exporter import export_batch_results
+except ImportError as e:
+    print(f"导入错误: {e}")
+    print(f"请确保在项目根目录运行: {Path(__file__).parent}")
+    sys.exit(1)
 
 load_dotenv()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Whole table hierarchical classification with LangGraph\n'
-                    'Bulk Mode: 3-4 LLM calls TOTAL for entire table (default)\n'
-                    'Parallel Mode: multiple threads, 4 LLM calls per field'
+        description="Whole table hierarchical classification with LangGraph\n"
+        "Bulk Mode: 3-4 LLM calls TOTAL for entire table (default)\n"
+        "Parallel Mode: multiple threads, 4 LLM calls per field"
     )
-    parser.add_argument('--input', required=True, help='Input CSV file with table fields to classify')
-    parser.add_argument('--input-encoding', default='utf-8-sig', help='Input file encoding (default: utf-8-sig, can use GB18030)')
-    parser.add_argument('--output-dir', default='outputs', help='Output directory for results')
-    parser.add_argument('--output-base-name', default='classification_results', help='Base name for output files')
-    parser.add_argument('--output-encoding', default='utf-8', help='Output file encoding (default: utf-8, can use GB18030)')
-    parser.add_argument('--with-ground-truth', action='store_true', help='Input CSV contains ground truth, enable evaluation')
-    parser.add_argument('--confidence-threshold', type=float, default=0.7, help='Confidence threshold')
-    parser.add_argument('--allow-multiple', action='store_true', default=True, help='Allow multiple labels per field')
-    parser.add_argument('--no-multiple', dest='allow_multiple', action='store_false', help='Disable multiple labels')
-    parser.add_argument('--enable-rag', action='store_true', help='Enable RAG retrieval')
-    parser.add_argument('--no-bulk-mode', dest='bulk_mode', action='store_false', default=True, help='Disable bulk mode, use original parallel mode')
-    parser.add_argument('--max-workers', type=int, default=3, help='Maximum parallel workers (only for parallel mode)')
+    parser.add_argument(
+        "--input", required=True, help="Input CSV file with table fields to classify"
+    )
+    parser.add_argument(
+        "--input-encoding",
+        default="utf-8-sig",
+        help="Input file encoding (default: utf-8-sig, can use GB18030)",
+    )
+    parser.add_argument(
+        "--output-dir", default="outputs", help="Output directory for results"
+    )
+    parser.add_argument(
+        "--output-base-name",
+        default="classification_results",
+        help="Base name for output files",
+    )
+    parser.add_argument(
+        "--output-encoding",
+        default="utf-8",
+        help="Output file encoding (default: utf-8, can use GB18030)",
+    )
+    parser.add_argument(
+        "--with-ground-truth",
+        action="store_true",
+        help="Input CSV contains ground truth, enable evaluation",
+    )
+    parser.add_argument(
+        "--confidence-threshold", type=float, default=0.7, help="Confidence threshold"
+    )
+    parser.add_argument(
+        "--allow-multiple",
+        action="store_true",
+        default=True,
+        help="Allow multiple labels per field",
+    )
+    parser.add_argument(
+        "--no-multiple",
+        dest="allow_multiple",
+        action="store_false",
+        help="Disable multiple labels",
+    )
+    parser.add_argument(
+        "--enable-rag", action="store_true", help="Enable RAG retrieval"
+    )
+    parser.add_argument(
+        "--no-bulk-mode",
+        dest="bulk_mode",
+        action="store_false",
+        default=True,
+        help="Disable bulk mode, use original parallel mode",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=3,
+        help="Maximum parallel workers (only for parallel mode)",
+    )
 
     args = parser.parse_args()
 
@@ -73,8 +129,8 @@ def main():
         hierarchical_categories=categories,
         confidence_threshold=args.confidence_threshold,
         allow_multiple=args.allow_multiple,
-        enable_table_context=True,        # requirement 1: use context_analysis
-        fast_mode=False,                  # requirement 3: separate feature and classification nodes
+        enable_table_context=True,  # requirement 1: use context_analysis
+        fast_mode=False,  # requirement 3: separate feature and classification nodes
         enable_rag=args.enable_rag,
     )
 
@@ -102,9 +158,13 @@ def main():
 
     # Run whole table classification
     if args.bulk_mode:
-        print(f"Starting classification in BULK MODE: {len(inputs)} fields will be processed in ~{3 + (1 if args.enable_rag else 0)} total LLM calls...")
+        print(
+            f"Starting classification in BULK MODE: {len(inputs)} fields will be processed in ~{3 + (1 if args.enable_rag else 0)} total LLM calls..."
+        )
     else:
-        print(f"Starting classification in PARALLEL MODE with max_workers={args.max_workers}...")
+        print(
+            f"Starting classification in PARALLEL MODE with max_workers={args.max_workers}..."
+        )
 
     results = agent.classify_table(
         fields=inputs,
@@ -133,8 +193,10 @@ def main():
     # In bulk mode, evaluation is done during graph execution
     # In parallel mode, evaluation is not done automatically, each result doesn't have aggregate
     # So we only show aggregate when we have it
-    if len(results) > 0 and len(results) > 0 and hasattr(results, 'evaluation'):
-        evaluation = results[0].get("evaluation") if isinstance(results[0], dict) else None
+    if len(results) > 0 and len(results) > 0 and hasattr(results, "evaluation"):
+        evaluation = (
+            results[0].get("evaluation") if isinstance(results[0], dict) else None
+        )
     elif len(results) > 0 and results[0].get("evaluation"):
         evaluation = results[0]["evaluation"]
 
