@@ -24,24 +24,59 @@ class OpenAILLM(BaseLLM):
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
     ) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        # Handle case where response is already a JSON string (some non-OpenAI compatible providers
-        # that return the raw JSON string instead of parsed object
-        if isinstance(response, str):
-            # Parse JSON string to dict then extract content
-            response = json.loads(response)
-        # Now response should be a dict or parsed object
-        if isinstance(response, dict):
-            content = response["choices"][0]["message"]["content"]
-        else:
-            # Normal OpenAI client parsed object
-            content = response.choices[0].message.content
-        return content.strip() if content else ""
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            # Handle case where response is already a JSON string (some non-OpenAI compatible providers
+            # that return the raw JSON string instead of parsed object
+            if isinstance(response, str):
+                # Parse JSON string to dict then extract content
+                try:
+                    response = json.loads(response)
+                except json.JSONDecodeError:
+                    # 如果是字符串但不是JSON，可能是错误消息
+                    return ""
+            
+            # Now response should be a dict or parsed object
+            if isinstance(response, dict):
+                # 防御性检查
+                if not response.get("choices"):
+                    return ""
+                if not isinstance(response["choices"], list) or len(response["choices"]) == 0:
+                    return ""
+                
+                content = response["choices"][0].get("message", {}).get("content")
+            else:
+                # Normal OpenAI client parsed object
+                # 防御性检查
+                if not hasattr(response, 'choices'):
+                    return ""
+                if not response.choices or len(response.choices) == 0:
+                    return ""
+                    
+                content = response.choices[0].message.content
+            
+            # 修复BUG: 正确处理None值
+            if content is None:
+                return ""
+                
+            # 处理思考标签（与generate_json保持一致）
+            if "<think>" in content:
+                parts = content.split("</think>")
+                if len(parts) >= 2:
+                    content = parts[-1]
+            
+            content = content.replace("</think>", "").strip()
+            
+            return content
+        except Exception as e:
+            # 简单返回空字符串而不是抛出异常
+            return ""
 
     def generate_json(
         self,
@@ -52,6 +87,10 @@ class OpenAILLM(BaseLLM):
         # Add instruction to output JSON
         prompt = prompt + "\n\nPlease respond with valid JSON only, no extra text."
         response_text = self.generate(prompt, temperature, max_tokens)
+
+        # 如果响应为空，返回空JSON
+        if not response_text or response_text.strip() == "":
+            return {}
 
         # Clean up common issues
         response_text = response_text.strip()
@@ -102,7 +141,9 @@ class OpenAILLM(BaseLLM):
         try:
             return json.loads(response_text)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {response_text}")
+            # 如果JSON解析失败，返回空JSON而不是抛出异常
+            # 这对于批量处理中的单个字段失败很重要
+            return {}
 
     async def agenerate(
         self,
@@ -110,24 +151,59 @@ class OpenAILLM(BaseLLM):
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
     ) -> str:
-        response = await self.async_client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        # Handle case where response is already a JSON string (some non-OpenAI compatible providers
-        # that return the raw JSON string instead of parsed object
-        if isinstance(response, str):
-            # Parse JSON string to dict then extract content
-            response = json.loads(response)
-        # Now response should be a dict or parsed object
-        if isinstance(response, dict):
-            content = response["choices"][0]["message"]["content"]
-        else:
-            # Normal OpenAI client parsed object
-            content = response.choices[0].message.content
-        return content.strip() if content else ""
+        try:
+            response = await self.async_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            
+            # Handle case where response is already a JSON string (some non-OpenAI compatible providers
+            # that return the raw JSON string instead of parsed object
+            if isinstance(response, str):
+                # Parse JSON string to dict then extract content
+                try:
+                    response = json.loads(response)
+                except json.JSONDecodeError:
+                    # 如果是字符串但不是JSON，可能是错误消息
+                    return ""
+            
+            # Now response should be a dict or parsed object
+            if isinstance(response, dict):
+                # 防御性检查
+                if not response.get("choices"):
+                    return ""
+                if not isinstance(response["choices"], list) or len(response["choices"]) == 0:
+                    return ""
+                
+                content = response["choices"][0].get("message", {}).get("content")
+            else:
+                # Normal OpenAI client parsed object
+                # 防御性检查
+                if not hasattr(response, 'choices'):
+                    return ""
+                if not response.choices or len(response.choices) == 0:
+                    return ""
+                    
+                content = response.choices[0].message.content
+            
+            # 修复BUG: 正确处理None值
+            if content is None:
+                return ""
+                
+            # 处理思考标签（与generate_json保持一致）
+            if "<think>" in content:
+                parts = content.split("</think>")
+                if len(parts) >= 2:
+                    content = parts[-1]
+            
+            content = content.replace("</think>", "").strip()
+            
+            return content
+        except Exception as e:
+            # 简单返回空字符串而不是抛出异常
+            return ""
 
     async def agenerate_json(
         self,
@@ -137,6 +213,10 @@ class OpenAILLM(BaseLLM):
     ) -> Dict[str, Any]:
         prompt = prompt + "\n\nPlease respond with valid JSON only, no extra text."
         response_text = await self.agenerate(prompt, temperature, max_tokens)
+
+        # 如果响应为空，返回空JSON
+        if not response_text or response_text.strip() == "":
+            return {}
 
         response_text = response_text.strip()
 
@@ -184,4 +264,5 @@ class OpenAILLM(BaseLLM):
         try:
             return json.loads(response_text)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {response_text}")
+            # 如果JSON解析失败，返回空JSON而不是抛出异常
+            return {}

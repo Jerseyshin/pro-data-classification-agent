@@ -7,12 +7,12 @@ Usage:
 Modes:
     1. Bulk Mode (default): 整张表所有字段一次性处理，每个步骤只调用一次LLM。
        对于100个字段的表，也只需要 ~3-4次LLM调用，速度最快。
-    2. Parallel Mode: 每个字段独立并行处理，每个字段完整流程 (4次调用/字段)。
+
 
 Requirements:
     1. Uses context_analysis: 启用表级上下文分析（默认开启）
     2. Whole table prediction: 对整张表所有字段批量分类
-    3. Separates feature_analysis and preliminary_classification: 不使用fast_mode，两个节点分离
+    3. Bulk mode only: 仅支持bulk模式，整表全字段一次性处理
     4. Output result documents: 输出 CSV 和 Markdown 结果文件
 """
 
@@ -44,8 +44,7 @@ load_dotenv()
 def main():
     parser = argparse.ArgumentParser(
         description="Whole table hierarchical classification with LangGraph\n"
-        "Bulk Mode: 3-4 LLM calls TOTAL for entire table (default)\n"
-        "Parallel Mode: multiple threads, 4 LLM calls per field"
+        "Bulk Mode only: 3-4 LLM calls TOTAL for entire table"
     )
     parser.add_argument(
         "--input", required=True, help="Input CSV file with table fields to classify"
@@ -91,19 +90,6 @@ def main():
     parser.add_argument(
         "--enable-rag", action="store_true", help="Enable RAG retrieval"
     )
-    parser.add_argument(
-        "--no-bulk-mode",
-        dest="bulk_mode",
-        action="store_false",
-        default=True,
-        help="Disable bulk mode, use original parallel mode",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=3,
-        help="Maximum parallel workers (only for parallel mode)",
-    )
 
     args = parser.parse_args()
 
@@ -123,14 +109,12 @@ def main():
 
     # Initialize agent with requested configuration:
     # - enable_table_context = True  → uses context_analysis (requirement 1)
-    # - fast_mode = False           → separates feature_analysis and preliminary_classification (requirement 3)
     agent = ClassificationAgent(
         llm=llm,
         hierarchical_categories=categories,
         confidence_threshold=args.confidence_threshold,
         allow_multiple=args.allow_multiple,
         enable_table_context=True,  # requirement 1: use context_analysis
-        fast_mode=False,  # requirement 3: separate feature and classification nodes
         enable_rag=args.enable_rag,
     )
 
@@ -156,49 +140,25 @@ def main():
 
     print(f"Loaded {len(inputs)} fields for classification")
 
-    # Run whole table classification
-    if args.bulk_mode:
-        print(
-            f"Starting classification in BULK MODE: {len(inputs)} fields will be processed in ~{3 + (1 if args.enable_rag else 0)} total LLM calls..."
-        )
-    else:
-        print(
-            f"Starting classification in PARALLEL MODE with max_workers={args.max_workers}..."
-        )
+    # Run whole table classification (only bulk mode)
+    print(
+        f"Starting classification in BULK MODE: {len(inputs)} fields will be processed in ~{3 + (1 if args.enable_rag else 0)} total LLM calls..."
+    )
 
-    results = agent.classify_table(
+    classification_result = agent.classify_table(
         fields=inputs,
         ground_truth_list=ground_truth_list,
-        bulk_mode=args.bulk_mode,
-        max_workers=args.max_workers,
     )
+
+    # Extract results list and evaluation from the returned dictionary
+    results = classification_result.get("results", [])
+    evaluation = classification_result.get("evaluation")
 
     print(f"Classification completed: {len(results)} fields processed")
 
     # Export results to CSV and Markdown
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Get overall evaluation if we have ground truth
-    evaluation = None
-    if args.with_ground_truth and args.bulk_mode:
-        # In bulk mode, evaluation is done in-graph by EvaluationNode
-        # We need to run a quick invoke to get the evaluation? Actually, evaluation is already in the result state
-        # The ClassificationAgent.graph.invoke returns the final state that includes evaluation
-        # But since we already got the results from bulk_final_results, let's check if evaluation exists in the graph result
-        # For CLI simplicity, we just do it the same way
-        pass
-
-    # Check for evaluation (works for both modes)
-    # In bulk mode, evaluation is done during graph execution
-    # In parallel mode, evaluation is not done automatically, each result doesn't have aggregate
-    # So we only show aggregate when we have it
-    if len(results) > 0 and len(results) > 0 and hasattr(results, "evaluation"):
-        evaluation = (
-            results[0].get("evaluation") if isinstance(results[0], dict) else None
-        )
-    elif len(results) > 0 and results[0].get("evaluation"):
-        evaluation = results[0]["evaluation"]
 
     if evaluation:
         print(f"\nEvaluation results:")

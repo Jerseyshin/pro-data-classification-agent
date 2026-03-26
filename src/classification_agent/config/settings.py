@@ -47,10 +47,7 @@ class Settings(BaseSettings):
     # Set to true to disable caching (not recommended for production)
     rag_disable_cache: bool = os.getenv("RAG_DISABLE_CACHE", "false").lower() == "true"
 
-    # Speed optimization: fast mode merges feature analysis + preliminary classification
-    # into one LLM call, reducing network round-trips by ~33%
-    # Faster speed with slightly lower accuracy (usually acceptable)
-    fast_mode: bool = os.getenv("FAST_MODE", "false").lower() == "true"
+    
 
     class Config:
         env_file = ".env"

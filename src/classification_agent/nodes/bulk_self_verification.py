@@ -70,8 +70,12 @@ class _CacheManager:
 def deterministic_hallucination_check_bulk(
     field_predictions: List[List[PredictedItem]],
     hierarchical_categories: List[HierarchicalCategory],
-) -> List[List[PredictedItem]]:
-    """Deterministic hallucination check with O(n) complexity using cached lookups"""
+) -> tuple[List[List[PredictedItem]], List[str]]:
+    """Deterministic hallucination check with O(n) complexity using cached lookups
+
+    Returns:
+        tuple: (cleaned_predictions, hallucinated_data_items)
+    """
     # Initialize cache manager
     if not hasattr(deterministic_hallucination_check_bulk, "cache_manager"):
         deterministic_hallucination_check_bulk.cache_manager = _CacheManager()
@@ -81,6 +85,7 @@ def deterministic_hallucination_check_bulk(
     cache_manager.refresh_cache(hierarchical_categories)
 
     cleaned_results: List[List[PredictedItem]] = []
+    hallucinated_items: List[str] = []
     total_removed = 0
     total_original = 0
 
@@ -103,6 +108,7 @@ def deterministic_hallucination_check_bulk(
                     data_item,
                 )
                 total_removed += 1
+                hallucinated_items.append(pred["data_item"])
                 continue
 
             # 2. Check all subitems exist and have valid parents (O(k))
@@ -122,6 +128,7 @@ def deterministic_hallucination_check_bulk(
 
             if not valid_subitems:
                 total_removed += 1
+                hallucinated_items.append(pred["data_item"])
                 continue
 
             passed.append(pred)
@@ -135,7 +142,7 @@ def deterministic_hallucination_check_bulk(
             total_original,
         )
 
-    return cleaned_results
+    return cleaned_results, hallucinated_items
 
     cleaned_results: List[List[PredictedItem]] = []
     total_removed = 0
@@ -208,9 +215,11 @@ class BulkSelfVerificationNode(BaseNode):
         all_predictions: List[List[PredictedItem]] = [
             fr.get("predictions", []) for fr in field_preliminary
         ]
-        cleaned_predictions = deterministic_hallucination_check_bulk(
-            all_predictions,
-            state["hierarchical_categories"],
+        cleaned_predictions, new_hallucinated_items = (
+            deterministic_hallucination_check_bulk(
+                all_predictions,
+                state["hierarchical_categories"],
+            )
         )
 
         # Create cleaned preliminary results
@@ -219,6 +228,10 @@ class BulkSelfVerificationNode(BaseNode):
             cleaned = dict(fr)
             cleaned["predictions"] = cleaned_predictions[i]
             cleaned_preliminary.append(cleaned)
+
+        # Collect hallucinated data items from deterministic check
+        current_hallucinated = state.get("hallucinated_data_items", [])
+        updated_hallucinated = list(set(current_hallucinated + new_hallucinated_items))
 
         prompt = load_prompt(
             "bulk_self_verification.jinja2",
@@ -288,6 +301,9 @@ class BulkSelfVerificationNode(BaseNode):
             if idx < len(inputs):
                 field_name = inputs[idx]["field_name"]
                 avg_conf = verification.get("average_confidence", 0.0)
+                # Handle None case
+                if avg_conf is None:
+                    avg_conf = 0.0
                 if suggested:
                     logger.info(
                         "字段[%s] 验证建议重分类，平均置信度: %.2f",
@@ -320,4 +336,5 @@ class BulkSelfVerificationNode(BaseNode):
 
         return {
             "bulk_verification": bulk_result,
+            "hallucinated_data_items": updated_hallucinated,
         }

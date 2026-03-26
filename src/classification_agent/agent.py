@@ -200,8 +200,6 @@ class ClassificationAgent:
         bge_model_name: Optional[str] = None,
         bge_device: Optional[str] = None,
         bge_use_fp16: Optional[bool] = None,
-        # Speed optimization
-        fast_mode: Optional[bool] = None,
         # Table context optimization
         enable_table_context: bool = True,
     ):
@@ -220,8 +218,6 @@ class ClassificationAgent:
             bge_model_name: BGE 模型名称或本地路径
             bge_device: BGE 运行设备 ("cpu" or "cuda")
             bge_use_fp16: BGE 是否使用半精度
-            fast_mode: 是否开启快速模式，合并特征分析+初步分类为一次LLM调用，
-                减少约33%的网络往返，速度更快但精度可能略有下降
             enable_table_context: 是否启用表级上下文分析，在字段分类前先分析整张表用途，
                 提供全局上下文给后续字段分类，提高准确率，默认开启
         """
@@ -246,9 +242,6 @@ class ClassificationAgent:
             self.settings.bge_device = bge_device
         if bge_use_fp16 is not None:
             self.settings.bge_use_fp16 = bge_use_fp16
-        # Apply fast mode override
-        if fast_mode is not None:
-            self.settings.fast_mode = fast_mode
 
         self.llm = llm or self._create_default_llm()
         self.hierarchical_categories = hierarchical_categories
@@ -323,21 +316,25 @@ class ClassificationAgent:
                 client=client,
                 model=self.settings.rag_embedding_model,
             )
-        
+
         # Wrap with cache for performance optimization (Wave 2 T2.1)
         # Only enable cache if explicitly configured or not disabled
         from classification_agent.rag.embeddings import CacheBackedEmbeddings
-        
-        cache_backend = self.settings.rag_cache_backend if hasattr(self.settings, 'rag_cache_backend') else "memory"
-        cache_enabled = not getattr(self.settings, 'rag_disable_cache', False)
-        
+
+        cache_backend = (
+            self.settings.rag_cache_backend
+            if hasattr(self.settings, "rag_cache_backend")
+            else "memory"
+        )
+        cache_enabled = not getattr(self.settings, "rag_disable_cache", False)
+
         if cache_enabled:
             self.embeddings = CacheBackedEmbeddings(
                 embeddings=base_embeddings,
                 cache_backend=cache_backend,
-                max_cache_size=getattr(self.settings, 'rag_cache_max_size', 10000),
-                ttl_seconds=getattr(self.settings, 'rag_cache_ttl_seconds', 3600),
-                cache_dir=getattr(self.settings, 'rag_cache_dir', ".embeddings_cache"),
+                max_cache_size=getattr(self.settings, "rag_cache_max_size", 10000),
+                ttl_seconds=getattr(self.settings, "rag_cache_ttl_seconds", 3600),
+                cache_dir=getattr(self.settings, "rag_cache_dir", ".embeddings_cache"),
                 enable_statistics=True,
             )
             logger.info(f"RAG embeddings caching enabled (backend: {cache_backend})")
@@ -568,25 +565,17 @@ class ClassificationAgent:
         allow_multiple: Optional[bool] = None,
         enable_rag: Optional[bool] = None,
         ground_truth_list: Optional[List[List[str]]] = None,
-        max_workers: int = 3,
-        bulk_mode: bool = True,
     ) -> List[ClassificationResult]:
         """
-        对整张表所有字段批量分类，支持两种模式：
+        对整张表所有字段批量分类（仅支持Bulk模式）：
 
-        **Bulk Mode (default, new - table-level processing with minimal LLM calls):**
+        **Bulk Mode (table-level processing with minimal LLM calls):**
         context_analysis (once) → (optional rag) → bulk_feature_analysis (ALL fields in one LLM call) →
         bulk_preliminary_classification (ALL fields in one LLM call) → bulk_self_verification (ALL in one) →
         bulk_final_result → done.
 
         **Total LLM calls for bulk mode: 3-4 calls TOTAL regardless of number of fields.**
         This is the fastest mode, drastically reduces API calls and total processing time.
-
-        **Parallel Mode (original - multiple concurrent threads):**
-        When bulk_mode = False, fall back to original parallel processing:
-        context_analysis (once) → (optional rag) → parallel processing each field:
-            feature_analysis → preliminary_classification → self_verification → final_result
-        (Each field has full pipeline, 4 calls per field).
 
         Args:
             fields: 整张表所有字段，每个元素包含 table_name, field_name, 可选 field_description
@@ -597,10 +586,6 @@ class ClassificationAgent:
             enable_rag: 动态指定是否启用RAG，不指定则使用settings默认
             ground_truth_list: 每个字段对应的真实数据项标签列表，如果提供会自动运行评估
                 len(ground_truth_list) == len(fields)
-            max_workers: 最大并发数（仅用于parallel mode），默认3，根据你的API并发限制调整
-            bulk_mode: 是否启用表级批量处理模式，默认True。
-                When True: ALL fields processed in 3-4 total LLM calls (minimal calls, fastest).
-                When False: use original parallel mode (one full pipeline per field, more calls).
 
         Returns:
             List[ClassificationResult] 每个字段对应一个分类结果，顺序和 fields 一致
@@ -654,195 +639,89 @@ class ClassificationAgent:
                 return process.memory_info().rss
             return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
 
-        if bulk_mode:
-            # Bulk Table Mode: entire table processed in one graph run, one LLM call per step
-            logger.info(
-                "Starting BULK table classification: %d fields will be processed in %d total LLM calls...",
-                len(fields),
-                3 + (1 if enable_rag else 0),
-            )
+        # Bulk Table Mode: entire table processed in one graph run, one LLM call per step
+        logger.info(
+            "Starting BULK table classification: %d fields will be processed in %d total LLM calls...",
+            len(fields),
+            3 + (1 if enable_rag else 0),
+        )
 
-            # Full initial state for bulk processing
-            initial_state: ClassificationState = {
-                "input": None,
-                "inputs": fields,
-                "table_chinese_name": table_chinese_name,
-                "hierarchical_categories": categories,
-                "confidence_threshold": threshold,
-                "allow_multiple": multiple,
-                "rag_enabled": rag_enabled,
-                "bulk_mode": True,
-                "ground_truth_data_items": None,
-                "ground_truth_list": ground_truth_list,
-                "remaining_ground_truth": None,
-                "evaluation": None,
-                "retrieved_examples": None,
-                "table_context_analysis": None,
-                # Bulk mode results
-                "bulk_feature_analysis": None,
-                "bulk_preliminary_classification": None,
-                "bulk_verification": None,
-                "bulk_final_results": None,
-                # Legacy fields for compatibility
-                "feature_analysis": None,
-                "preliminary_classification": None,
-                "verification": None,
-                "completed_results": None,
-                "reclassification_count": 0,
-                "hallucinated_data_items": [],
-                "_final_predictions": None,
-                "_final_labels": None,
-                "_final_avg_confidence": None,
-                "_reasoning_chain": None,
-            }
+        # Full initial state for bulk processing
+        initial_state: ClassificationState = {
+            "input": None,
+            "inputs": fields,
+            "table_chinese_name": table_chinese_name,
+            "hierarchical_categories": categories,
+            "confidence_threshold": threshold,
+            "allow_multiple": multiple,
+            "rag_enabled": rag_enabled,
+            "bulk_mode": True,
+            "ground_truth_data_items": None,
+            "ground_truth_list": ground_truth_list,
+            "remaining_ground_truth": None,
+            "evaluation": None,
+            "retrieved_examples": None,
+            "table_context_analysis": None,
+            # Bulk mode results
+            "bulk_feature_analysis": None,
+            "bulk_preliminary_classification": None,
+            "bulk_verification": None,
+            "bulk_final_results": None,
+            # Legacy fields for compatibility
+            "feature_analysis": None,
+            "preliminary_classification": None,
+            "verification": None,
+            "completed_results": None,
+            "reclassification_count": 0,
+            "hallucinated_data_items": [],
+            "_final_predictions": None,
+            "_final_labels": None,
+            "_final_avg_confidence": None,
+            "_reasoning_chain": None,
+        }
 
-            # Run the entire bulk graph
-            result_state = self.graph.invoke(initial_state)
+        # Run the entire bulk graph
+        result_state = self.graph.invoke(initial_state)
 
-            # Get the bulk final results
-            completed_results = result_state.get("bulk_final_results", [])
+        # Get the bulk final results
+        completed_results = result_state.get("bulk_final_results", [])
 
-            # If evaluation was run, attach the evaluation to the result (optional)
-            evaluation = result_state.get("evaluation")
+        # If evaluation was run, attach the evaluation to the result (optional)
+        evaluation = result_state.get("evaluation")
 
-            logger.info(
-                "Bulk classification complete: %d fields processed with just %d LLM calls total",
+        logger.info(
+            "Bulk classification complete: %d fields processed with just %d LLM calls total",
+            len(completed_results),
+            3 + (1 if enable_rag else 0) + (1 if evaluation else 0),
+        )
+
+        # Ensure we return the same number of results as input fields
+        if len(completed_results) != len(fields) and len(completed_results) > 0:
+            logger.warning(
+                "Number of bulk results (%d) doesn't match number of input fields (%d)",
                 len(completed_results),
-                3 + (1 if enable_rag else 0) + (1 if evaluation else 0),
-            )
-
-            # Ensure we return the same number of results as input fields
-            if len(completed_results) != len(fields) and len(completed_results) > 0:
-                logger.warning(
-                    "Number of bulk results (%d) doesn't match number of input fields (%d)",
-                    len(completed_results),
-                    len(fields),
-                )
-
-            # Performance measurement end
-            perf_elapsed = time.perf_counter() - perf_start_time
-            perf_mem_after = _update_mem_peak()
-            if perf_mem_after > perf_mem_peak:
-                perf_mem_peak = perf_mem_after
-            logger.info(
-                "分类处理完成 [%s模式]: %d 个字段, 耗时: %.2f秒",
-                "bulk" if bulk_mode else "parallel",
                 len(fields),
-                perf_elapsed,
-            )
-            logger.info(
-                "内存使用: 开始=%dMB, 峰值=%dMB, 结束=%dMB",
-                perf_mem_before // 1024 // 1024,
-                perf_mem_peak // 1024 // 1024,
-                perf_mem_after // 1024 // 1024,
             )
 
-            return completed_results
+        # Performance measurement end
+        perf_elapsed = time.perf_counter() - perf_start_time
+        perf_mem_after = _update_mem_peak()
+        if perf_mem_after > perf_mem_peak:
+            perf_mem_peak = perf_mem_after
+        logger.info(
+            "分类处理完成 [Bulk模式]: %d 个字段, 耗时: %.2f秒",
+            len(fields),
+            perf_elapsed,
+        )
+        logger.info(
+            "内存使用: 开始=%dMB, 峰值=%dMB, 结束=%dMB",
+            perf_mem_before // 1024 // 1024,
+            perf_mem_peak // 1024 // 1024,
+            perf_mem_after // 1024 // 1024,
+        )
 
-        else:
-            # Original Parallel Mode: process all fields in parallel with thread pool
-            # Step 1: Run table-level context analysis once (shared by all fields)
-            # Only if enable_table_context is True (default)
-            table_context = None
-            retrieved_examples = None
-            if self.enable_table_context:
-                logger.info(
-                    "Running table-level context analysis once (shared by all fields)..."
-                )
-                # Initial state just for context analysis and RAG
-                context_initial: ClassificationState = {
-                    "input": None,
-                    "inputs": fields,
-                    "table_chinese_name": table_chinese_name,
-                    "hierarchical_categories": categories,
-                    "confidence_threshold": threshold,
-                    "allow_multiple": multiple,
-                    "rag_enabled": rag_enabled,
-                    "bulk_mode": False,
-                    "ground_truth_data_items": None,
-                    "ground_truth_list": ground_truth_list,
-                    "remaining_ground_truth": None,
-                    "evaluation": None,
-                    "retrieved_examples": None,
-                    "table_context_analysis": None,
-                    "feature_analysis": None,
-                    "preliminary_classification": None,
-                    "verification": None,
-                    "completed_results": None,
-                    "reclassification_count": 0,
-                    "hallucinated_data_items": [],
-                    "_final_predictions": None,
-                    "_final_labels": None,
-                    "_final_avg_confidence": None,
-                    "_reasoning_chain": None,
-                }
-                # Run just context analysis and RAG if needed
-                result = self.graph.invoke(context_initial)
-                table_context = result.get("table_context_analysis")
-                retrieved_examples = result.get("retrieved_examples")
-                logger.info(
-                    "Table context analysis complete, starting parallel classification of %d fields...",
-                    len(fields),
-                )
-
-            # Step 2: Process all fields in parallel
-            completed_results: List[ClassificationResult] = [None] * len(fields)
-
-            def process_field(
-                i: int, field: TableFieldInput, gt: Optional[List[str]]
-            ) -> tuple[int, ClassificationResult]:
-                """Process a single field, keep track of original index for ordering"""
-                result = self._classify_single_with_context(
-                    field_input=field,
-                    table_context=table_context,
-                    retrieved_examples=retrieved_examples,
-                    hierarchical_categories=categories,
-                    confidence_threshold=threshold,
-                    allow_multiple=multiple,
-                    enable_rag=rag_enabled,
-                    ground_truth_data_items=gt,
-                )
-                return (i, result)
-
-            # Use thread pool for parallel execution (LLM calls are IO-bound, threads work well)
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for i, field in enumerate(fields):
-                    gt = (
-                        ground_truth_list[i]
-                        if ground_truth_list and i < len(ground_truth_list)
-                        else None
-                    )
-                    futures.append(executor.submit(process_field, i, field, gt))
-
-                for future in as_completed(futures):
-                    i, result = future.result()
-                    completed_results[i] = result
-
-            logger.info(
-                "ClassificationAgent.classify_table: processed %d fields in parallel",
-                len(completed_results),
-            )
-
-            # Performance measurement end
-            perf_elapsed = time.perf_counter() - perf_start_time
-            perf_mem_after = _update_mem_peak()
-            if perf_mem_after > perf_mem_peak:
-                perf_mem_peak = perf_mem_after
-            logger.info(
-                "分类处理完成 [%s模式]: %d 个字段, 耗时: %.2f秒",
-                "bulk" if bulk_mode else "parallel",
-                len(fields),
-                perf_elapsed,
-            )
-            logger.info(
-                "内存使用: 开始=%dMB, 峰值=%dMB, 结束=%dMB",
-                perf_mem_before // 1024 // 1024,
-                perf_mem_peak // 1024 // 1024,
-                perf_mem_after // 1024 // 1024,
-            )
-
-            return completed_results
+        # Return both results and evaluation (if any)
+        return {"results": completed_results, "evaluation": evaluation}
 
     def _classify_single_with_context(
         self,
@@ -1160,11 +1039,11 @@ class ClassificationAgent:
 class AsyncClassificationAgent(ClassificationAgent):
     """
     异步版本的ClassificationAgent (Wave 2 T2.2 异步迁移原型)
-    
+
     提供异步API，使用asyncio替代ThreadPoolExecutor，支持异步LLM调用
     保持与ClassificationAgent相同的API和行为
     """
-    
+
     async def aclassify_table(
         self,
         fields: List[TableFieldInput],
@@ -1179,31 +1058,32 @@ class AsyncClassificationAgent(ClassificationAgent):
     ) -> List[ClassificationResult]:
         """
         异步版本的classify_table，使用asyncio.gather并行处理字段
-        
+
         注意：对于bulk_mode=True（表级批量处理），异步版本与同步版本相同，
         因为bulk模式已经通过单次LLM调用处理整个表。异步优势主要在并行模式。
-        
+
         Args:
             fields: 整张表所有字段
             (其余参数与同步版本相同)
-            
+
         Returns:
             List[ClassificationResult]: 每个字段的分类结果，顺序和 fields 一致
         """
         import asyncio
         from typing import List
-        
+
         # 使用缓存性能监控
         from classification_agent.async_utils import AsyncPerformanceMonitor
+
         perf_monitor = AsyncPerformanceMonitor()
-        
+
         # 输入验证
         if not fields:
             raise ValueError("fields cannot be empty")
-        
+
         for field in fields:
             validate_input(field)
-        
+
         # 使用分类体系
         categories = hierarchical_categories or self.hierarchical_categories
         if categories is None:
@@ -1211,20 +1091,20 @@ class AsyncClassificationAgent(ClassificationAgent):
                 "hierarchical_categories must be provided either "
                 "at initialization or classification time"
             )
-        
+
         # 动态传入的 categories 才需要校验（初始化时传入的已在 __init__ 校验过）
         if hierarchical_categories is not None:
             validate_categories(categories)
-        
+
         # 应用动态参数
         confidence = confidence_threshold or self.confidence_threshold
         multiple = allow_multiple if allow_multiple is not None else self.allow_multiple
         use_rag = enable_rag if enable_rag is not None else self.settings.enable_rag
-        
+
         # 确保图已构建
         if self.graph is None:
             self._ensure_graph()
-        
+
         # 选择处理模式
         if bulk_mode:
             # Bulk模式：表级一次性处理（3-4次LLM调用）
@@ -1232,7 +1112,7 @@ class AsyncClassificationAgent(ClassificationAgent):
                 f"Starting ASYNC BULK table classification: "
                 f"{len(fields)} fields will be processed in ~3 total LLM calls..."
             )
-            
+
             return await self._bulk_classify_async(
                 fields=fields,
                 table_chinese_name=table_chinese_name,
@@ -1248,7 +1128,7 @@ class AsyncClassificationAgent(ClassificationAgent):
                 f"Starting ASYNC PARALLEL table classification: "
                 f"{len(fields)} fields will be processed in parallel"
             )
-            
+
             return await self._parallel_classify_async(
                 fields=fields,
                 table_chinese_name=table_chinese_name,
@@ -1259,7 +1139,7 @@ class AsyncClassificationAgent(ClassificationAgent):
                 ground_truth_list=ground_truth_list,
                 max_workers=max_workers,
             )
-    
+
     async def _bulk_classify_async(
         self,
         fields: List[TableFieldInput],
@@ -1272,7 +1152,7 @@ class AsyncClassificationAgent(ClassificationAgent):
     ) -> List[ClassificationResult]:
         """
         异步批量分类（表级一次性处理）
-        
+
         Bulk模式已经是高效的，异步版本与同步版本基本相同，
         但可能使用异步版本的LLM调用（如果LLM支持）
         """
@@ -1285,21 +1165,21 @@ class AsyncClassificationAgent(ClassificationAgent):
             "rag_enabled": use_rag,
             "bulk_mode": True,
         }
-        
+
         if table_chinese_name:
             initial_state["table_chinese_name"] = table_chinese_name
-        
+
         if ground_truth_list:
             initial_state["ground_truth_list"] = ground_truth_list
-        
+
         # TODO: 如果LangGraph支持异步调用，使用 ainvoke()
         # 当前使用同步 invoke()，但LLM调用可能是异步的（如果LLM实现支持）
         result_state = self.graph.invoke(initial_state)
-        
+
         results = result_state.get("results")
         if not results:
             raise ValueError("Processing completed but no results returned")
-        
+
         # 提取并返回结果
         all_results: List[ClassificationResult] = []
         for idx, field in enumerate(fields):
@@ -1310,16 +1190,18 @@ class AsyncClassificationAgent(ClassificationAgent):
                 predictions=field_result.get("predictions", []),
                 verification_result=field_result.get("verification_result", {}),
                 confidence=field_result.get("confidence", 0.0),
-                suggests_reclassification=field_result.get("suggests_reclassification", False),
+                suggests_reclassification=field_result.get(
+                    "suggests_reclassification", False
+                ),
                 feature_analysis=field_result.get("feature_analysis"),
                 retrieved_examples=field_result.get("retrieved_examples"),
             )
             if field.get("field_description"):
                 res.field_description = field["field_description"]
             all_results.append(res)
-        
+
         return all_results
-    
+
     async def _parallel_classify_async(
         self,
         fields: List[TableFieldInput],
@@ -1333,21 +1215,21 @@ class AsyncClassificationAgent(ClassificationAgent):
     ) -> List[ClassificationResult]:
         """
         异步并行分类（每个字段独立处理）
-        
+
         使用asyncio.gather并行处理多个字段，每个字段运行完整的分类流程
         """
         import asyncio
-        
+
         # 创建任务列表
         tasks = []
-        
+
         for i, field in enumerate(fields):
             gt = (
                 ground_truth_list[i]
                 if ground_truth_list and i < len(ground_truth_list)
                 else None
             )
-            
+
             # 包装每个字段的分类作为异步任务
             task = self._process_single_field_async(
                 field=field,
@@ -1359,10 +1241,10 @@ class AsyncClassificationAgent(ClassificationAgent):
                 use_rag=use_rag,
             )
             tasks.append((i, asyncio.create_task(task)))
-        
+
         # 收集结果并保持原始顺序
         results = [None] * len(fields)
-        
+
         for i, task in tasks:
             try:
                 result = await task
@@ -1380,9 +1262,9 @@ class AsyncClassificationAgent(ClassificationAgent):
                 )
                 if fields[i].get("field_description"):
                     results[i].field_description = fields[i]["field_description"]
-        
+
         return results
-    
+
     async def _process_single_field_async(
         self,
         field: TableFieldInput,
@@ -1395,7 +1277,7 @@ class AsyncClassificationAgent(ClassificationAgent):
     ) -> ClassificationResult:
         """
         异步处理单个字段
-        
+
         为每个字段创建独立的分类流程，使用异步执行
         """
         # 创建该字段的初始状态
@@ -1407,17 +1289,17 @@ class AsyncClassificationAgent(ClassificationAgent):
             "rag_enabled": use_rag,
             "bulk_mode": False,
         }
-        
+
         if table_chinese_name:
             initial_state["table_chinese_name"] = table_chinese_name
-        
+
         if ground_truth:
             initial_state["ground_truth_data_items"] = ground_truth
-        
+
         # TODO: 使用异步图调用 ainvoke() 如果可用
         # 当前使用同步 invoke()，但在 async context 中的线程池执行
         result_state = self.graph.invoke(initial_state)
-        
+
         # 提取结果
         res = ClassificationResult(
             table_name=field["table_name"],
@@ -1425,16 +1307,18 @@ class AsyncClassificationAgent(ClassificationAgent):
             predictions=result_state.get("predictions", []),
             verification_result=result_state.get("verification_result", {}),
             confidence=result_state.get("confidence", 0.0),
-            suggests_reclassification=result_state.get("suggests_reclassification", False),
+            suggests_reclassification=result_state.get(
+                "suggests_reclassification", False
+            ),
             feature_analysis=result_state.get("feature_analysis"),
             retrieved_examples=result_state.get("retrieved_examples"),
         )
-        
+
         if field.get("field_description"):
             res.field_description = field["field_description"]
-        
+
         return res
-    
+
     async def aclassify_table_from_csv(
         self,
         csv_path: str,
@@ -1453,44 +1337,48 @@ class AsyncClassificationAgent(ClassificationAgent):
     ) -> List[ClassificationResult]:
         """
         异步从CSV文件分类
-        
+
         自动选择流式或批量加载，然后使用异步分类
         """
         # 检查文件大小决定是否使用流式处理
         import os
+
         file_size = os.path.getsize(csv_path)
-        
+
         # 使用同步助手函数加载数据（在async context中通过线程池执行）
         from classification_agent.utils.data_reader import load_data_csv
-        
+
         async def load_data():
             import asyncio
+
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(
-                None, 
+                None,
                 lambda: load_data_csv(
-                    csv_path, 
+                    csv_path,
                     include_ground_truth=include_ground_truth,
                     encoding=encoding,
-                    skip_empty_gt=skip_empty_gt
-                )
+                    skip_empty_gt=skip_empty_gt,
+                ),
             )
-        
+
         inputs, ground_truth_list = await load_data()
-        
+
         if not inputs:
             return []
-        
+
         # 决定是否使用流式处理
         if len(inputs) >= streaming_threshold:
             if progress_callback:
                 await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: progress_callback(
-                        f"Large file ({len(inputs)} records), using streaming", 0, len(inputs)
-                    )
+                        f"Large file ({len(inputs)} records), using streaming",
+                        0,
+                        len(inputs),
+                    ),
                 )
-            
+
             return await self._streaming_classify_async(
                 csv_path=csv_path,
                 table_chinese_name=table_chinese_name,
@@ -1518,7 +1406,7 @@ class AsyncClassificationAgent(ClassificationAgent):
                 max_workers=max_workers,
                 bulk_mode=bulk_mode,
             )
-    
+
     async def _streaming_classify_async(
         self,
         csv_path: str,
@@ -1536,14 +1424,14 @@ class AsyncClassificationAgent(ClassificationAgent):
     ) -> List[ClassificationResult]:
         """
         异步流式分类大文件
-        
+
         逐批读取CSV并异步处理每批
         """
         import asyncio
         from classification_agent.utils.data_reader import load_data_csv_stream
-        
+
         all_results = []
-        
+
         # 使用流式读取器
         stream_reader = load_data_csv_stream(
             csv_path,
@@ -1552,14 +1440,14 @@ class AsyncClassificationAgent(ClassificationAgent):
             skip_empty_gt=skip_empty_gt,
             batch_size=50,  # 每批大小
         )
-        
+
         batch_idx = 0
         total_processed = 0
-        
+
         for inputs, ground_truths in stream_reader:
             if not inputs:
                 continue
-            
+
             # 异步处理当前批
             batch_results = await self.aclassify_table(
                 fields=inputs,
@@ -1572,19 +1460,19 @@ class AsyncClassificationAgent(ClassificationAgent):
                 max_workers=max_workers,
                 bulk_mode=bulk_mode,
             )
-            
+
             all_results.extend(batch_results)
             total_processed += len(inputs)
-            
+
             # 进度回调
             if progress_callback:
                 await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: progress_callback(
                         f"Processing large file", batch_idx, total_processed
-                    )
+                    ),
                 )
-            
+
             batch_idx += 1
-        
+
         return all_results

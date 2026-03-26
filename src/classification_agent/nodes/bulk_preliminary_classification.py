@@ -19,6 +19,20 @@ class BulkPreliminaryClassificationNode(BaseNode):
                 "bulk_preliminary_classification": None,
             }
 
+        # Check if this is a reclassification (after verification suggested reclassification)
+        # We need to increment reclassification_count if we have hallucinated_data_items
+        # or if this is not the first pass
+        hallucinated_items = state.get("hallucinated_data_items", [])
+        reclassification_count = state.get("reclassification_count", 0)
+
+        # If we have hallucinated items and this is the first reclassification, increment count
+        if hallucinated_items and reclassification_count == 0:
+            # This is a reclassification pass
+            reclassification_count = 1
+            self.logger.info(
+                "开始重新分类循环，处理 %d 个幻觉数据项", len(hallucinated_items)
+            )
+
         # Get the feature analyses for all fields
         field_analyses = bulk_feature_analysis["field_analyses"]
 
@@ -30,7 +44,9 @@ class BulkPreliminaryClassificationNode(BaseNode):
             allow_multiple=state["allow_multiple"],
             table_context=state.get("table_context_analysis"),
             retrieved_examples=state.get("retrieved_examples"),
-            hallucinated_data_items=[],  # No hallucination collection needed for bulk first pass
+            hallucinated_data_items=state.get(
+                "hallucinated_data_items", []
+            ),  # Filter known hallucinations
         )
 
         result = self.llm.generate_json(prompt)
@@ -73,4 +89,5 @@ class BulkPreliminaryClassificationNode(BaseNode):
 
         return {
             "bulk_preliminary_classification": bulk_result,
+            "reclassification_count": reclassification_count,
         }
