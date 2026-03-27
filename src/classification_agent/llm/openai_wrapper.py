@@ -37,6 +37,8 @@ class OpenAILLM(BaseLLM):
             if isinstance(response, str):
                 # Parse JSON string to dict then extract content
                 try:
+                    if response.startswith("data:"):
+                        response = response[5:]
                     response = json.loads(response)
                 except json.JSONDecodeError:
                     # 如果是字符串但不是JSON，可能是错误消息
@@ -164,6 +166,8 @@ class OpenAILLM(BaseLLM):
             if isinstance(response, str):
                 # Parse JSON string to dict then extract content
                 try:
+                    if response.startswith("data:"):
+                        response = response[5:]
                     response = json.loads(response)
                 except json.JSONDecodeError:
                     # 如果是字符串但不是JSON，可能是错误消息
