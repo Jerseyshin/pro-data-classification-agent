@@ -57,9 +57,30 @@ class RAGRetrievalNode(BaseNode):
             self.logger.info("RAG enabled but no examples in store, skipping")
             return {"retrieved_examples": None}
 
+        # Determine input for query: handle both single field and bulk table mode
+        if state.get("inputs") and len(state["inputs"]) > 0:
+            # Bulk table mode: use the first field as representative for table-level query
+            # This is because RAG retrieval happens before feature analysis in bulk mode,
+            # so we can only use basic table information
+            input_for_query = state["inputs"][0]
+            self.logger.info(
+                "Bulk table mode: using first field for RAG query - table: %s, field: %s",
+                input_for_query.get("table_name"),
+                input_for_query.get("field_name")
+            )
+        else:
+            # Single field mode
+            input_for_query = state["input"]
+            self.logger.info(
+                "Single field mode: using input for RAG query - table: %s, field: %s",
+                input_for_query.get("table_name"),
+                input_for_query.get("field_name")
+            )
+
         # Prepare query text from input and feature analysis
+        # Note: In bulk mode, feature_analysis may not be available yet
         query_text = self._prepare_query_text(
-            state["input"],
+            input_for_query,
             state.get("feature_analysis", {})
         )
 

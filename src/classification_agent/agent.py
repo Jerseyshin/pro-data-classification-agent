@@ -7,10 +7,11 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 from langgraph.graph import StateGraph
+import numpy as np
 
 # Performance measurement
 try:
-    import psutil
+    import psutilS
 
     _HAS_PSUTIL = True
 except ImportError:

@@ -5,9 +5,11 @@ For each preliminary prediction from each field, cross-check if the prediction i
 {% if table_context %}
 ## Table Context (applies to ALL fields):
 The whole table has been analyzed:
-- Inferred purpose: {{ table_context.inferred_purpose }}
+- Business scenario: {{ table_context.business_scenario }}
 - Key business concepts: {{ table_context.key_business_concepts|join(', ') }}
-- Overall data category: {{ table_context.overall_data_category }}
+- Core business objects: {{ table_context.core_business_objects|join(', ') }}
+- Overall description: {{ table_context.overall_description }}
+- Table type/role: {{ table_context.table_type }}
 {% endif %}
 
 ## Classification Confidence Threshold:

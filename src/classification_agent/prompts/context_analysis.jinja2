@@ -12,27 +12,46 @@ Table name: {{ table_name }}
 
 ## Your task:
 
-Analyze the overall table and infer:
+Analyze the overall table and provide a comprehensive business context analysis in the following 5 aspects:
 
-1. **What is the overall business purpose of this table?**
-   - What business process does this table support?
-   - Who are the users of this data?
-   - Give a concise description (1-3 sentences).
+1. **Business Scenario (business_scenario)**
+   - Brief description of the business scenario this table supports
+   - What specific business process or use case does this table serve?
+   - 1-2 sentences
 
-2. **What are the key business concepts this table deals with?**
-   - List 3-8 key business domain keywords.
-   - Example: ["user identification", "transaction payment", "search behavior", ...]
+2. **Table Type/Role (table_type)**
+   - Identify the table's role in the data ecosystem
+   - Options: fact table, dimension table, transaction table, log table, reference table, configuration table, staging table, summary/aggregation table, other
+   - If unsure, choose the most appropriate
 
-3. **What broad category of data does this table primarily contain?**
-   - Choose one from: user personal data, transaction/business data, behavior/logging data, metadata/config data, other
-   - If it mixes, pick the dominant category.
+3. **Core Business Objects (core_business_objects)**
+   - List the primary business entities this table deals with
+   - Examples: ["customer", "order", "product", "payment", "user", "device", "transaction"]
+   - 2-5 entities
+
+4. **Key Business Concepts (key_business_concepts)**
+   - List important business domain concepts and keywords
+   - Focus on business terminology, not technical terms
+   - 5-10 concepts
+
+5. **Overall Description (overall_description)**
+   - A concise summary that integrates all the above aspects
+   - Provide holistic understanding of the table's purpose and content
+   - 2-3 sentences
 
 ## Output format (JSON only):
 
 {
-  "inferred_purpose": "Brief description of what this table is used for in business",
+  "business_scenario": "Brief description of business scenario",
+  "table_type": "table's role (fact|dimension|transaction|log|reference|config|staging|summary|other)",
+  "core_business_objects": ["entity1", "entity2", "entity3", ...],
   "key_business_concepts": ["concept1", "concept2", "concept3", ...],
-  "overall_data_category": "user personal data|transaction/business data|behavior/logging data|metadata/config data|other"
+  "overall_description": "A concise summary that integrates the above aspects"
 }
 
-Keep it concise and focused on the big picture, not the individual fields.
+Important requirements:
+- Keep JSON format strictly as shown
+- All fields must be present
+- Use consistent terminology
+- Focus on business perspective, not technical implementation
+- Be concise but informative

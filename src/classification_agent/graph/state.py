@@ -9,16 +9,8 @@ from classification_agent.types.schemas import (
     RetrievedExample,
     EvaluationResult,
     ClassificationResult,
+    TableContextAnalysis,
 )
-
-
-class TableContextAnalysis(TypedDict):
-    """表级上下文分析结果"""
-    table_name: str                  # 表名
-    table_chinese_name: Optional[str] # 表中文名
-    inferred_purpose: str            # 推断的表用途/业务含义
-    key_business_concepts: List[str]  # 关键词：该表涉及的核心业务概念
-    overall_data_category: str       # 该表整体属于哪大类数据（例如：用户数据、交易数据、日志数据等）
 
 
 # Bulk mode results (table-level processing, all fields in one go)
@@ -83,16 +75,27 @@ class ClassificationState(TypedDict):
     completed_results: Optional[List[ClassificationResult]] # 已完成的分类结果列表
 
     # 迭代计数（防止无限循环）
+
     reclassification_count: int                          # 已经重新分类的次数，限制最多1次（针对当前字段）
 
+
+
     # 记录之前被确定性检查剔除的幻觉预测，重分类时不要重复预测
+
     hallucinated_data_items: List[str]                  # 之前被发现是幻觉的数据项名称列表
 
+
+
     # 最终输出（单字段/批量都用这个汇总）
+
     _final_predictions: Optional[List[PredictedItem]]    # 最终预测列表（单字段）
+
     _final_labels: Optional[List[str]]                   # 最终标签列表（单字段）
+
     _final_avg_confidence: Optional[float]               # 最终平均置信度（单字段）
-    _reasoning_chain: Optional[List[str]]                # 完整推理链
+
+
 
     # 批量模式最终结果：所有字段的结果
+
     bulk_final_results: Optional[List[ClassificationResult]] # 批量最终结果（所有字段）

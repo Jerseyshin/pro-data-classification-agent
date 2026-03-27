@@ -3,12 +3,10 @@ Context Analysis Node - Analyze whole table context before field-level classific
 
 This node:
 1. Takes the whole table information (table name, table chinese name, all fields)
-2. Infers the overall business purpose of the table
-3. Extracts key business concepts
-4. Identifies what broad data category the table belongs to
-5. Provides global context for subsequent field-level classification
+2. Performs comprehensive business context analysis in 5 aspects
+3. Provides global context for subsequent field-level classification
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from classification_agent.graph.state import ClassificationState
 from classification_agent.llm.base import BaseLLM
@@ -22,10 +20,8 @@ logger = get_logger(__name__)
 class ContextAnalysisNode(BaseNode):
     """Table-level context analysis node.
 
-    Analyze the whole table to infer its business purpose and overall
-    data category, providing global context for subsequent field-level
-    classification. This improves accuracy when all fields in the
-    table share a common business context.
+    Analyze the whole table to infer comprehensive business context in 5 aspects,
+    providing global context for subsequent field-level classification.
     """
 
     def __init__(self, llm: BaseLLM):
@@ -64,37 +60,49 @@ class ContextAnalysisNode(BaseNode):
 
         result = self.llm.generate_json(prompt)
 
-        # Validate required keys
+        # Validate required keys for new format
         required_keys = [
-            "inferred_purpose",
+            "business_scenario",
+            "table_type",
+            "core_business_objects",
             "key_business_concepts",
-            "overall_data_category",
+            "overall_description",
         ]
         for key in required_keys:
             if key not in result:
                 result[key] = result.get(key, "")
 
-        if not isinstance(result.get("key_business_concepts"), list):
-            # Fallback: split string into list
-            if isinstance(result["key_business_concepts"], str):
-                result["key_business_concepts"] = [
-                    kw.strip() for kw in result["key_business_concepts"].split(",") if kw.strip()
-                ]
+        # Ensure lists are proper lists
+        def ensure_list(value, default=None):
+            if default is None:
+                default = []
+            if isinstance(value, list):
+                return value
+            elif isinstance(value, str):
+                # Split by comma or other delimiters
+                items = [item.strip() for item in value.replace('，', ',').split(',') if item.strip()]
+                return items
             else:
-                result["key_business_concepts"] = []
+                return default
+
+        core_business_objects = ensure_list(result.get("core_business_objects"))
+        key_business_concepts = ensure_list(result.get("key_business_concepts"))
 
         context_analysis = {
             "table_name": table_name,
             "table_chinese_name": table_chinese_name,
-            "inferred_purpose": result["inferred_purpose"],
-            "key_business_concepts": result["key_business_concepts"],
-            "overall_data_category": result["overall_data_category"],
+            "business_scenario": result["business_scenario"],
+            "table_type": result["table_type"],
+            "core_business_objects": core_business_objects,
+            "key_business_concepts": key_business_concepts,
+            "overall_description": result["overall_description"],
         }
 
         logger.info(
-            "ContextAnalysisNode - Table context analyzed: purpose=%s, category=%s, %d keywords",
-            context_analysis["inferred_purpose"][:50] + "..." if len(context_analysis["inferred_purpose"]) > 50 else context_analysis["inferred_purpose"],
-            context_analysis["overall_data_category"],
+            "ContextAnalysisNode - Table context analyzed: scenario='%s', type=%s, %d core objects, %d concepts",
+            context_analysis["business_scenario"][:60] + "..." if len(context_analysis["business_scenario"]) > 60 else context_analysis["business_scenario"],
+            context_analysis["table_type"],
+            len(context_analysis["core_business_objects"]),
             len(context_analysis["key_business_concepts"]),
         )
 

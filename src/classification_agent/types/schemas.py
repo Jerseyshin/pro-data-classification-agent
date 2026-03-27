@@ -9,12 +9,14 @@ class TableFieldInput(TypedDict):
 
 
 class TableContextAnalysis(TypedDict):
-    """表级上下文分析结果"""
+    """表级上下文分析结果 - 5个方面综合分析"""
     table_name: str                  # 表名
     table_chinese_name: Optional[str] # 表中文名
-    inferred_purpose: str            # 推断的表用途/业务含义
-    key_business_concepts: List[str] # 关键词：该表涉及的核心业务概念
-    overall_data_category: str       # 该表整体属于哪大类数据（例如：用户数据、交易数据、日志数据等）
+    business_scenario: str           # 业务场景描述
+    table_type: str                  # 表类型/角色: fact|dimension|transaction|log|reference|config|staging|summary|other
+    core_business_objects: List[str] # 核心业务对象/实体
+    key_business_concepts: List[str] # 关键业务概念
+    overall_description: str         # 整体综合描述
 
 
 class DataSubitem(TypedDict):
@@ -119,6 +121,7 @@ class ClassificationResult(TypedDict):
     preliminary_result: PreliminaryResult      # 初步分类结果（可追溯）
     verification_result: VerificationResult    # 验证结果（可追溯）
     evaluation: Optional[EvaluationResult]    # 评估结果（仅当提供ground_truth时存在）
+    table_context_analysis: Optional[TableContextAnalysis]  # 表级上下文分析结果
 
 
 # Bulk processing types

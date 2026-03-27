@@ -292,9 +292,11 @@ def export_results_to_markdown(
             f.write(f"- **Table name:** {ctx.get('table_name', 'N/A')}\n")
             if ctx.get('table_chinese_name'):
                 f.write(f"- **Table chinese name:** {ctx['table_chinese_name']}\n")
-            f.write(f"- **Inferred purpose:** {ctx['inferred_purpose']}\n")
+            f.write(f"- **Business scenario:** {ctx['business_scenario']}\n")
+            f.write(f"- **Table type/role:** {ctx['table_type']}\n")
+            f.write(f"- **Core business objects:** {', '.join(ctx['core_business_objects'])}\n")
             f.write(f"- **Key business concepts:** {', '.join(ctx['key_business_concepts'])}\n")
-            f.write(f"- **Overall data category:** {ctx['overall_data_category']}\n")
+            f.write(f"- **Overall description:** {ctx['overall_description']}\n")
             f.write("\n---\n\n")
 
         # Full details with intermediate steps
